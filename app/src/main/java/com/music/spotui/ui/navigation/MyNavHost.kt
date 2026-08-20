@@ -24,6 +24,7 @@ import com.music.spotui.ui.screens.AlbumScreen
 import com.music.spotui.ui.screens.ArtistReleasesScreen
 import com.music.spotui.ui.screens.ArtistScreen
 import com.music.spotui.ui.screens.CategoryScreen
+import com.music.spotui.ui.screens.DiagnosticsScreen
 import com.music.spotui.ui.screens.DownloadsScreen
 import com.music.spotui.ui.screens.HistoryScreen
 import com.music.spotui.ui.screens.HomeScreen
@@ -135,6 +136,10 @@ fun MyNavHost(
 
         composable(Routes.Settings.route){
             SettingsScreen(navHostController)
+        }
+
+        composable(Routes.Diagnostics.route){
+            DiagnosticsScreen()
         }
 
         composable(Routes.History.route){
