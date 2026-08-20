@@ -1,6 +1,6 @@
-# Spotui [![Downloads](https://img.shields.io/github/downloads/H4zh4n/Spotui/total?style=for-the-badge&labelColor=0d1117)](https://github.com/H4zh4n/Spotui/releases)
+# Spotui
 
-A Spotify clone for Android, built with Jetpack Compose.
+A Spotify clone for Android with audio debug. 
 
 ## 💖 Sponsor this project
 
@@ -42,5 +42,4 @@ This project is for educational purposes only. Spotify is a trademark of Spotify
 
 
 ### 🌟 What's Different in This Fork?
-This fork includes a completely overhauled lossless audio engine, offline caching, and various UI improvements over the main project.
-➡️ **[Click here to read the full list of features and differences](CHANGELOG.md)**
+This fork adds debugging for audio playback. When the streaming quality is set lower than 'High', playback issues occur, including audio stuttering, skipping to the next track, and other glitches.
