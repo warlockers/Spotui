@@ -21,6 +21,7 @@ import com.google.common.util.concurrent.ListenableFuture
 import com.music.spotui.di.SongPlayer
 import com.music.spotui.ui.notification.PlaybackService
 import com.music.spotui.ui.theme.SpotuiTheme
+import com.music.spotui.utils.StreamLogger
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.launch
 
@@ -38,6 +39,9 @@ class MainActivity : ComponentActivity() {
 
         super.onCreate(savedInstanceState)
         this.setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT)
+
+        // Initialize StreamLogger for audio diagnostics
+        StreamLogger.init(this)
 
         // Ask for notification permission (Android 13+) so the media notification shows.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -102,6 +106,4 @@ class MainActivity : ComponentActivity() {
         SongPlayer.release()
     }
 }
-
-
 
