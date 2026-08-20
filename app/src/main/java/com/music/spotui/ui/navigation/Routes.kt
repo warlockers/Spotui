@@ -28,6 +28,7 @@ sealed class Routes(
     object DeezerIntro : Routes(0, "DeezerIntro", "deezerintro")
     object DeezerLogin : Routes(0, "DeezerLogin", "deezerlogin")
     object SpotiflacVerify : Routes(0, "SpotiflacVerify", "spotiflacverify")
+    object Diagnostics : Routes(0, "Diagnostics", "diagnostics")
 }
 
 
