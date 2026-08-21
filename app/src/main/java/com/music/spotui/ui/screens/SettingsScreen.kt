@@ -106,6 +106,7 @@ import com.music.spotui.ui.components.DefaultAppPrompt
 import com.music.spotui.util.DefaultLinkHelper
 import com.music.spotui.ui.theme.AppBackground
 import com.music.spotui.ui.theme.AppPalette
+import androidx.compose.material.icons.filled.BugReport
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -386,6 +387,28 @@ fun SettingsScreen(navController: NavController) {
                     imageVector = Icons.Default.Refresh,
                     contentDescription = "Clear cache",
                     tint = Color.Gray,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            Spacer(Modifier.height(6.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { navController.navigate(com.music.spotui.ui.navigation.Routes.Diagnostics.route) }
+                    .background(Color(0xFF1E1E24))
+                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Stream Diagnostics", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Monitor audio playback logs and stream quality issues", color = Color.Gray, fontSize = 11.sp)
+                }
+                Icon(
+                    imageVector = Icons.Default.BugReport,
+                    contentDescription = "Diagnostics",
+                    tint = Color(0xFF42A5F5),
                     modifier = Modifier.size(20.dp)
                 )
             }
@@ -1119,42 +1142,22 @@ private fun QualityPicker(
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
                         )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            text = "Deezer is the most reliable & successful provider for Lossless FLAC playback and downloads. Please log in to Deezer for optimal Lossless availability.",
-                            color = Color(0xFFFFE0B2),
-                            fontSize = 12.sp,
-                            lineHeight = 16.sp,
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        if (deezerConnected) {
+                        if (!deezerConnected) {
+                            Spacer(Modifier.height(6.dp))
                             Text(
-                                text = "✓ Deezer account connected (Lossless ready)",
-                                color = Color(0xFF1ED760),
+                                text = "Log in",
+                                color = Color(0xFFFFB74D),
                                 fontSize = 12.sp,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        } else if (onDeezerLogin != null) {
-                            Row(
+                                fontWeight = FontWeight.Bold,
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(AppPalette)
-                                    .clickable { onDeezerLogin() }
-                                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "Log in to Deezer now",
-                                    color = Color.Black,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .clickable { onDeezerLogin?.invoke() }
+                                    .padding(4.dp)
+                            )
                         }
                     }
                 }
             }
-            Spacer(Modifier.height(2.dp))
         }
     }
 }
