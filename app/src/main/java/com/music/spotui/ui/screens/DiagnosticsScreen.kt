@@ -7,6 +7,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -14,9 +15,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontSize
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.music.spotui.utils.StreamLogger
@@ -64,175 +66,179 @@ fun DiagnosticsScreen() {
         )
     }
 
-    if (showExportSuccess) {
-        LaunchedEffect(Unit) {
-            kotlinx.coroutines.delay(2000)
-            showExportSuccess = false
-        }
-        Snackbar(
-            modifier = Modifier
-                .padding(16.dp)
-                .align(Alignment.BottomCenter)
-        ) {
-            Text("Logs exported successfully")
-        }
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(0xFF121212))
+    Box(
+        modifier = Modifier.fillMaxSize()
     ) {
-        // Header
-        Surface(
+        Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            color = Color(0xFF1E1E1E),
-            shape = RoundedCornerShape(12.dp)
+                .fillMaxSize()
+                .background(Color(0xFF121212))
         ) {
-            Column(
-                modifier = Modifier.padding(16.dp)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "Stream Diagnostics",
-                        color = Color.White,
-                        fontSize = 18.sp,
-                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
-                    )
-                    Switch(
-                        checked = loggingEnabled,
-                        onCheckedChange = { enabled ->
-                            loggingEnabled = enabled
-                            StreamLogger.setEnabled(context, enabled)
-                        },
-                        modifier = Modifier.scale(0.8f)
-                    )
-                }
-
-                Text(
-                    "Logs: ${logs.size} entries",
-                    color = Color(0xFFBBBBBB),
-                    fontSize = 12.sp
-                )
-
-                if (loggingEnabled) {
-                    Text(
-                        "● Recording enabled",
-                        color = Color(0xFF4CAF50),
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
-                } else {
-                    Text(
-                        "○ Recording disabled",
-                        color = Color(0xFFFF9800),
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
-                }
-            }
-        }
-
-        // Control buttons
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Button(
-                onClick = { showClearDialog = true },
-                modifier = Modifier
-                    .weight(1f)
-                    .height(40.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFFD32F2F)
-                )
-            ) {
-                Icon(Icons.Default.Delete, contentDescription = "Clear", modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("Clear", fontSize = 12.sp)
-            }
-
-            Button(
-                onClick = {
-                    scope.launch(Dispatchers.IO) {
-                        StreamLogger.exportLogs(context)
-                        showExportSuccess = true
-                    }
-                },
-                modifier = Modifier
-                    .weight(1f)
-                    .height(40.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF4CAF50)
-                )
-            ) {
-                Icon(Icons.Default.Download, contentDescription = "Export", modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("Export", fontSize = 12.sp)
-            }
-
-            Button(
-                onClick = { logs = StreamLogger.getLogs() },
-                modifier = Modifier
-                    .weight(1f)
-                    .height(40.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF2196F3)
-                )
-            ) {
-                Icon(Icons.Default.Refresh, contentDescription = "Refresh", modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("Refresh", fontSize = 12.sp)
-            }
-        }
-
-        // Logs list
-        if (logs.isEmpty()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(32.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                Icon(
-                    Icons.Default.Info,
-                    contentDescription = "No logs",
-                    tint = Color(0xFF666666),
-                    modifier = Modifier.size(48.dp)
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    "No logs yet",
-                    color = Color(0xFFBBBBBB),
-                    fontSize = 14.sp
-                )
-                Text(
-                    if (loggingEnabled) "Logs will appear when playing music" else "Enable logging to see stream diagnostics",
-                    color = Color(0xFF666666),
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(top = 8.dp)
-                )
-            }
-        } else {
-            LazyColumn(
+            // Header
+            Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp)
+                    .padding(16.dp),
+                color = Color(0xFF1E1E1E),
+                shape = RoundedCornerShape(12.dp)
             ) {
-                items(logs.reversed()) { entry ->
-                    LogEntryCard(entry)
+                Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Stream Diagnostics",
+                            color = Color.White,
+                            fontSize = 18.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Switch(
+                            checked = loggingEnabled,
+                            onCheckedChange = { enabled ->
+                                loggingEnabled = enabled
+                                StreamLogger.setEnabled(context, enabled)
+                            },
+                            modifier = Modifier.scale(0.8f)
+                        )
+                    }
+
+                    Text(
+                        "Logs: ${logs.size} entries",
+                        color = Color(0xFFBBBBBB),
+                        fontSize = 12.sp
+                    )
+
+                    if (loggingEnabled) {
+                        Text(
+                            "● Recording enabled",
+                            color = Color(0xFF4CAF50),
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    } else {
+                        Text(
+                            "○ Recording disabled",
+                            color = Color(0xFFFF9800),
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                }
+            }
+
+            // Control buttons
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Button(
+                    onClick = { showClearDialog = true },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(40.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFFD32F2F)
+                    )
+                ) {
+                    Icon(Icons.Default.Delete, contentDescription = "Clear", modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Clear", fontSize = 12.sp)
+                }
+
+                Button(
+                    onClick = {
+                        scope.launch(Dispatchers.IO) {
+                            StreamLogger.exportLogs(context)
+                            showExportSuccess = true
+                        }
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(40.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF4CAF50)
+                    )
+                ) {
+                    Icon(Icons.Default.Download, contentDescription = "Export", modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Export", fontSize = 12.sp)
+                }
+
+                Button(
+                    onClick = { logs = StreamLogger.getLogs() },
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(40.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF2196F3)
+                    )
+                ) {
+                    Icon(Icons.Default.Refresh, contentDescription = "Refresh", modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Refresh", fontSize = 12.sp)
+                }
+            }
+
+            // Logs list
+            if (logs.isEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        Icons.Default.Info,
+                        contentDescription = "No logs",
+                        tint = Color(0xFF666666),
+                        modifier = Modifier.size(48.dp)
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        "No logs yet",
+                        color = Color(0xFFBBBBBB),
+                        fontSize = 14.sp
+                    )
+                    Text(
+                        if (loggingEnabled) "Logs will appear when playing music" else "Enable logging to see stream diagnostics",
+                        color = Color(0xFF666666),
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp)
+                ) {
+                    items(logs.reversed()) { entry ->
+                        LogEntryCard(entry)
+                    }
+                }
+            }
+        }
+
+        if (showExportSuccess) {
+            Snackbar(
+                modifier = Modifier
+                    .padding(16.dp)
+                    .align(Alignment.BottomCenter)
+            ) {
+                Text("Logs exported successfully")
+                LaunchedEffect(Unit) {
+                    kotlinx.coroutines.delay(2000)
+                    showExportSuccess = false
                 }
             }
         }
@@ -285,7 +291,7 @@ private fun LogEntryCard(entry: StreamLogger.LogEntry) {
                             entry.level,
                             color = levelColor,
                             fontSize = 10.sp,
-                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                            fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(end = 8.dp)
                         )
 
