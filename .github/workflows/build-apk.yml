@@ -1,4 +1,4 @@
-name: Build APK
+name: Build APK (sideload signed)
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    name: Build release APK
+    name: Build signed release APK
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -22,18 +22,18 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
           cache: gradle
 
       - name: Grant execute permission to Gradle wrapper
         run: chmod +x ./gradlew
 
-      - name: Build release APK
+      - name: Build release APK (shared debug signing for sideload)
         run: ./gradlew assembleRelease
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Spotui-v1.5.0-release-apk
+          name: Spotui-v1.5.0-sideload-apk
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
