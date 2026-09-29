@@ -1,0 +1,46 @@
+# Spotui [![Downloads](https://img.shields.io/github/downloads/H4zh4n/Spotui/total?style=for-the-badge&labelColor=0d1117)](https://github.com/H4zh4n/Spotui/releases)
+
+A Spotify clone for Android, built with Jetpack Compose.
+
+## 💖 Sponsor this project
+
+If you enjoy using this app and want to support its continued development, consider buying me a coffee! 
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/hazhan)
+
+_____________
+
+## Features
+
+It connects to your real Spotify account and mirrors the Spotify experience.
+
+- 🎵 **Playlists** — browse, play, add/remove tracks, create new playlists, all synced with your Spotify account
+- 📝 **Lyrics** — Spotify's own synced lyrics, with a live preview on the player and a full-screen view
+- 📻 **Spotify recommendations** — the queue continues with Spotify's real track radio (autoplay), so "up next" matches what open.spotify.com would play
+- ❤️ Liked songs, followed artists, listening history and downloads (including lossless FLAC)
+
+## Screenshot
+
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/dfd41cd7-92a8-46d5-800d-a4ecfddfeef8" width="32%" alt="Screenshot_2026-07-13-21-03-36-065_com music spotui" />
+  <img src="https://github.com/user-attachments/assets/64e1a3d7-fef0-422e-aa80-276e5b66d874" width="32%" alt="Screenshot_2026-07-13-21-01-15-466_com music spotui" />
+  <img src="https://github.com/user-attachments/assets/a64f54b3-f69c-4073-970d-d189d5ed5da5" width="32%" alt="Screenshot_2026-07-13-20-43-45-056_com music spotui" />
+</p>
+
+## Credits
+
+spotui builds on the work of several open-source projects:
+
+- [Meld](https://github.com/) — Spotify metadata + YouTube streaming layer
+- [Neptune](https://github.com/navneet851/spotify-clone-jetpack-compose) — the original Jetpack Compose Spotify clone this app started from
+- [SpotiFLAC](https://github.com/spotbye/SpotiFLAC) — lossless (FLAC) track resolving
+- [SimpMusic](https://github.com/maxrave-dev/SimpMusic) — crossfade / DJ-style audio filter processing
+
+## Disclaimer
+
+This project is for educational purposes only. Spotify is a trademark of Spotify AB.
+
+
+### 🌟 What's Different in This Fork?
+This fork includes a completely overhauled lossless audio engine, offline caching, and various UI improvements over the main project.
+➡️ **[Click here to read the full list of features and differences](CHANGELOG.md)**
