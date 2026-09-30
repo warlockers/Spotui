@@ -2,12 +2,6 @@
 
 A Spotify clone for Android, built with Jetpack Compose.
 
-## 💖 Sponsor this project
-
-If you enjoy using this app and want to support its continued development, consider buying me a coffee! 
-
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/hazhan)
-
 _____________
 
 ## Features
