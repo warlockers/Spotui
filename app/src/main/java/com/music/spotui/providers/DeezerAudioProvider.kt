@@ -473,6 +473,73 @@ object DeezerAudioProvider {
         }
     }
 
+    // ── Match validation for the direct (logged-in) Deezer path ───────────────
+
+    /** Read-only description of a Deezer track, used to validate a candidate before streaming it. */
+    data class TrackInfo(
+        val trackId: String,
+        val title: String,
+        val artists: List<String>,
+        val album: String?,
+        val isrc: String?,
+        val durationMs: Long?,
+        /** Deezer's own availability flag for the caller's region; null when the field is absent. */
+        val readable: Boolean?,
+        /** Replacement track Deezer reports for region-blocked tracks ("alternative"), if any. */
+        val alternativeId: String?,
+    )
+
+    /** Parses a Deezer public-API track object (`track/{id}`, `track/isrc:…` or a search item). */
+    fun parseTrackInfo(json: JSONObject): TrackInfo? {
+        val matched = json.toMatchedTrack() ?: return null
+        return TrackInfo(
+            trackId = matched.trackId,
+            title = matched.title,
+            artists = matched.artistNames,
+            album = matched.album,
+            isrc = matched.isrc,
+            durationMs = matched.durationMs,
+            readable = if (json.has("readable")) json.optBoolean("readable") else null,
+            alternativeId = json.optJSONObject("alternative")?.stringOrNull("id"),
+        )
+    }
+
+    /**
+     * Scores how well [track] matches the wanted [query] with the same rules the mirror resolver
+     * uses (title, artist, album, duration, version markers). An ISRC hit is authoritative for
+     * identity — it is accepted even when the title normalises to blank (non-Latin scripts) —
+     * and only a wildly different duration invalidates it. Compare against [isAcceptableScore].
+     */
+    fun scoreMatch(query: Query, track: TrackInfo): Int {
+        val wantedIsrc = normalizeIsrc(query.isrc)
+        val wantedDurationMs = query.durationMs?.takeIf { it > 0L }
+        if (wantedIsrc != null && normalizeIsrc(track.isrc) == wantedIsrc) {
+            return if (durationMatches(wantedDurationMs, track.durationMs)) 220 else REJECT_SCORE
+        }
+        return scoreTrack(
+            track = MatchedTrack(
+                trackId = track.trackId,
+                title = track.title,
+                artistNames = track.artists,
+                album = track.album,
+                isrc = track.isrc,
+                durationMs = track.durationMs,
+                md5Origin = null,
+                mediaVersion = null,
+            ),
+            wantedTitle = query.title.titleMatchNormalized(),
+            wantedArtists = query.artists.map { it.normalized() }.filter { it.isNotBlank() },
+            wantedAlbum = query.album.normalized(),
+            wantedIsrc = wantedIsrc,
+            wantedDurationMs = wantedDurationMs,
+        )
+    }
+
+    fun isAcceptableScore(score: Int): Boolean = score >= MIN_MATCH_SCORE
+
+    /** Title without "(feat. …)" / "- Remastered" noise, for building search terms. */
+    fun cleanTitleForSearch(title: String): String = title.searchQueryTitle()
+
     private fun searchTracksFromDeezerPublicApi(term: String, limit: Int = SEARCH_LIMIT): JSONArray? {
         val url = DEEZER_API_BASE.toHttpUrl()
             .newBuilder()

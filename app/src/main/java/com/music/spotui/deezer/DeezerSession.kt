@@ -71,7 +71,15 @@ internal object DeezerSession {
         val trackToken: String,
         val md5origin: String,
         val mediaVersion: String,
+        /**
+         * Deezer's replacement track id (`FALLBACK.SNG_ID`) for tracks that are blocked in the
+         * account's country / not streamable; null when there is none.
+         */
+        val fallbackId: String? = null,
     )
+
+    /** Result of minting a stream URL; [error] explains a failure (Deezer error code + message). */
+    data class UrlResult(val url: String?, val encrypted: Boolean, val error: String? = null)
 
     /** Resolve a Deezer track id from an ISRC via the public API. */
     fun deezerIdForIsrc(isrc: String): String? = runCatching {
@@ -87,25 +95,38 @@ internal object DeezerSession {
     }.getOrNull()
 
     /** Fetch the private stream token + CDN origin for a Deezer track id. */
-    fun trackTokens(deezerId: String): TrackTokens? = runCatching {
+    fun trackTokens(deezerId: String): TrackTokens? = trackTokensOrError(deezerId).first
+
+    /** Like [trackTokens], but also returns why the lookup failed (null error on success). */
+    fun trackTokensOrError(deezerId: String): Pair<TrackTokens?, String?> = try {
         authorize()
         val results = callGwApi("song.getListData", "{\"sng_ids\": [$deezerId]}")
             .getJSONObject("results")
         val data = results.getJSONArray("data").getJSONObject(0)
+        val sngId = data.getString("SNG_ID")
         TrackTokens(
-            id = data.getString("SNG_ID"),
+            id = sngId,
             trackToken = data.getString("TRACK_TOKEN"),
             md5origin = data.optString("MD5_ORIGIN"),
             mediaVersion = data.optString("MEDIA_VERSION"),
-        )
-    }.getOrNull()
+            fallbackId = data.optJSONObject("FALLBACK")
+                ?.optString("SNG_ID")
+                ?.takeIf { it.isNotBlank() && it != "0" && it != sngId },
+        ) to null
+    } catch (e: Exception) {
+        null to "${e.javaClass.simpleName}: ${e.message?.take(120)}"
+    }
 
     /**
      * Mint a CDN stream URL for [tokens] at [quality]. Returns the url and whether
      * the stream is Blowfish-encrypted (media get_url streams always are).
      * Ported from `Deezer.getTrackUrl` incl. the token-refresh retry.
      */
-    fun getTrackUrl(tokens: TrackTokens, quality: Int, refreshAttempt: Int = 0): Pair<String?, Boolean> {
+    fun getTrackUrl(tokens: TrackTokens, quality: Int, refreshAttempt: Int = 0): Pair<String?, Boolean> =
+        mintTrackUrl(tokens, quality, refreshAttempt).let { it.url to it.encrypted }
+
+    /** Same as [getTrackUrl] but keeps Deezer's error code/message when no URL can be minted. */
+    fun mintTrackUrl(tokens: TrackTokens, quality: Int, refreshAttempt: Int = 0): UrlResult {
         val lt = licenseToken
         if (lt != null && quality > 0) {
             val format = when (quality) {
@@ -113,6 +134,7 @@ internal object DeezerSession {
                 QUALITY_MP3_128 -> "MP3_128"
                 else -> "FLAC"
             }
+            var failure: String? = null
             try {
                 val payload = """
                     {"license_token": "$lt",
@@ -123,7 +145,7 @@ internal object DeezerSession {
                     "https://media.deezer.com/v1/get_url",
                     payload,
                     mapOf("Cookie" to "arl=$arl"),
-                ) ?: return null to true
+                ) ?: return UrlResult(null, true, "$format: empty get_url response")
                 val result = JSONObject(output)
                 if (result.has("data")) {
                     val arr = result.getJSONArray("data")
@@ -131,32 +153,44 @@ internal object DeezerSession {
                         val data = arr.getJSONObject(i)
                         if (data.has("errors")) {
                             val errors = data.getJSONArray("errors")
+                            val summary = mutableListOf<String>()
                             for (j in 0 until errors.length()) {
-                                val code = errors.getJSONObject(j).optInt("code")
+                                val err = errors.getJSONObject(j)
+                                val code = err.optInt("code")
+                                summary += "$code ${err.optString("message")}".trim()
                                 if (code == 2001 && refreshAttempt < 1) {
                                     // Expired track token — refresh once and retry.
                                     trackTokens(tokens.id)?.let { fresh ->
-                                        return getTrackUrl(fresh, quality, refreshAttempt + 1)
+                                        return mintTrackUrl(fresh, quality, refreshAttempt + 1)
                                     }
                                 }
                             }
+                            failure = "$format: ${summary.joinToString("; ")}"
                             Log.w(TAG, "get_url errors: ${data.get("errors")}")
                         }
                         val media = data.optJSONArray("media")
                         if (media != null && media.length() > 0) {
                             val url = media.getJSONObject(0)
                                 .getJSONArray("sources").getJSONObject(0).getString("url")
-                            return url to true
+                            return UrlResult(url, true)
                         }
                     }
+                } else if (result.has("error")) {
+                    failure = "$format: ${result.opt("error")}"
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "get_url failed: $e")
+                failure = "$format: ${e.javaClass.simpleName}: ${e.message?.take(120)}"
             }
-            return null to true
+            return UrlResult(null, true, failure ?: "$format: no media in get_url response")
         }
         // Legacy CDN generation (kept as last resort, mostly dead on modern Deezer).
-        return generateTrackUrl(tokens, quality) to true
+        val legacy = generateTrackUrl(tokens, quality)
+        return UrlResult(
+            legacy,
+            true,
+            if (legacy == null) "no license token (not logged in?) and legacy url generation failed" else null,
+        )
     }
 
     // ── HTTP + auth internals ────────────────────────────────────────────────
@@ -194,6 +228,21 @@ internal object DeezerSession {
         options.optBoolean("web_hq") || options.optBoolean("mobile_hq") -> QUALITY_MP3_320
         else -> QUALITY_MP3_128
     }
+
+    /** Public (unauthenticated) Deezer API call; blocking, may throw on network errors. */
+    fun publicApi(path: String): JSONObject = callPublicApi(path)
+
+    /**
+     * Returns "code: message" when [json] is a Deezer API error object, else null.
+     * Code 4 is the public API's rate limit ("Quota limit exceeded"), 800 is "no data".
+     */
+    fun apiError(json: JSONObject): String? =
+        json.optJSONObject("error")?.let { "${it.optInt("code")}: ${it.optString("message")}" }
+
+    fun isQuotaError(json: JSONObject): Boolean =
+        json.optJSONObject("error")?.let {
+            it.optInt("code") == 4 || it.optString("message").contains("quota", ignoreCase = true)
+        } == true
 
     private fun callPublicApi(path: String): JSONObject {
         val url = URL("https://api.deezer.com/$path")

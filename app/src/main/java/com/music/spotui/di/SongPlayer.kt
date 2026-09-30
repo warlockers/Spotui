@@ -869,13 +869,23 @@ object SongPlayer {
                     isrc = isrc,
                     searchQuery = "$title $artist".trim(),
                     maxFormat = maxFormat,
+                    expect = com.music.spotui.providers.DeezerAudioProvider.Query(
+                        mediaId = spotifyId ?: song,
+                        title = title,
+                        artists = splitArtists(artist),
+                        album = album,
+                        isrc = isrc,
+                        durationMs = durationMs,
+                    ),
                 )
+            }.onFailure { err ->
+                if (forPlayback) logResolution("✗ Deezer Direct threw ${err.javaClass.simpleName}: ${err.message?.take(200)}")
             }.getOrNull()
             if (direct is com.music.spotui.deezer.DeezerSource.Result.Success) {
-                if (forPlayback) logResolution("✓ Deezer Direct SUCCESS (${direct.qualityLabel})")
+                if (forPlayback) logResolution("✓ Deezer Direct SUCCESS (${direct.qualityLabel}) [${direct.note}]")
                 return direct.uri to direct.qualityLabel
             }
-            if (forPlayback) logResolution("✗ Deezer Direct: ${direct?.javaClass?.simpleName ?: "error"}")
+            if (forPlayback) logResolution("✗ Deezer Direct: ${com.music.spotui.deezer.DeezerSource.describe(direct)}")
         } else if (forPlayback) {
             logResolution("ℹ Deezer account not logged in / disabled — trying Deezer mirror.")
         }
@@ -901,6 +911,10 @@ object SongPlayer {
         }
     }
 
+    /** "Artist A, Artist B" -> ["Artist A", "Artist B"], so each artist is scored on its own. */
+    private fun splitArtists(artist: String): List<String> =
+        artist.split(",").map { it.trim() }.filter { it.isNotBlank() }
+
     /**
      * Resolves one specific, user-pinned Deezer track id (no matching involved): direct Deezer
      * session first, then the Deezer mirror. Returns (uri, qualityLabel) or null.
@@ -918,10 +932,10 @@ object SongPlayer {
                 com.music.spotui.deezer.DeezerSource.resolveByTrackId(appContext, deezerTrackId, maxFormat)
             }.getOrNull()
             if (direct is com.music.spotui.deezer.DeezerSource.Result.Success) {
-                if (forPlayback) logResolution("✓ Deezer Direct SUCCESS (${direct.qualityLabel})")
+                if (forPlayback) logResolution("✓ Deezer Direct SUCCESS (${direct.qualityLabel}) [${direct.note}]")
                 return direct.uri to direct.qualityLabel
             }
-            if (forPlayback) logResolution("✗ Deezer Direct: ${direct?.javaClass?.simpleName ?: "error"}")
+            if (forPlayback) logResolution("✗ Deezer Direct: ${com.music.spotui.deezer.DeezerSource.describe(direct)}")
         } else if (forPlayback) {
             logResolution("ℹ Deezer account not logged in / disabled — trying Deezer mirror.")
         }
@@ -1314,11 +1328,22 @@ object SongPlayer {
                                         spotifyId = flacSpotifyId,
                                         isrc = isrc,
                                         searchQuery = "$cleanTitle $songArtist".trim(),
+                                        expect = com.music.spotui.providers.DeezerAudioProvider.Query(
+                                            mediaId = flacSpotifyId ?: song,
+                                            title = cleanTitle,
+                                            artists = splitArtists(songArtist),
+                                            album = songAlbum,
+                                            isrc = isrc,
+                                            durationMs = durationMs,
+                                        ),
                                     )
                                 }.getOrNull()
+                                if (dzRes !is com.music.spotui.deezer.DeezerSource.Result.Success && forPlayback) {
+                                    logResolution("✗ Deezer Direct: ${com.music.spotui.deezer.DeezerSource.describe(dzRes)}")
+                                }
                                 if (dzRes is com.music.spotui.deezer.DeezerSource.Result.Success) {
                                     if (dzRes.mimeFlac || !quality.lossless) {
-                                        if (forPlayback) logResolution("✓ Deezer Direct SUCCESS (${dzRes.qualityLabel})")
+                                        if (forPlayback) logResolution("✓ Deezer Direct SUCCESS (${dzRes.qualityLabel}) [${dzRes.note}]")
                                         result = Triple(dzRes.uri, "Deezer", dzRes.qualityLabel)
                                     } else {
                                         if (forPlayback) logResolution("ℹ Deezer Direct is ${dzRes.qualityLabel} (lossy); searching lossless providers first.")
