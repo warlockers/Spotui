@@ -432,12 +432,53 @@ object DeezerAudioProvider {
         return null
     }
 
-    private fun searchTracksFromDeezerPublicApi(term: String): JSONArray? {
+    /** One raw Deezer search result, for the manual "pick the right track" UI. */
+    data class SearchHit(
+        val trackId: String,
+        val title: String,
+        val artist: String,
+        val album: String?,
+        val coverUrl: String?,
+        val durationMs: Long?,
+        /** Deezer's public 30s MP3 clip (no login needed), used as a preview fallback. */
+        val previewUrl: String?,
+    )
+
+    /**
+     * Plain Deezer text search for manual matching. Unlike [findCandidateTracks] there is NO
+     * scoring / rejection: the whole point is to find tracks the automatic matcher missed or
+     * rejected. Returns null if the request failed (as opposed to an empty result list).
+     */
+    fun searchManual(term: String, limit: Int = 25): List<SearchHit>? {
+        if (term.isBlank()) return emptyList()
+        val array = searchTracksFromDeezerPublicApi(term, limit) ?: return null
+        return buildList {
+            for (i in 0 until array.length()) {
+                val obj = array.optJSONObject(i) ?: continue
+                val id = obj.stringOrNull("id") ?: continue
+                val title = obj.stringOrNull("title") ?: continue
+                val album = obj.optJSONObject("album")
+                add(
+                    SearchHit(
+                        trackId = id,
+                        title = title,
+                        artist = obj.optJSONObject("artist")?.stringOrNull("name").orEmpty(),
+                        album = album?.stringOrNull("title"),
+                        coverUrl = album?.stringOrNull("cover_medium") ?: album?.stringOrNull("cover_small"),
+                        durationMs = obj.longOrNull("duration")?.times(1000L),
+                        previewUrl = obj.stringOrNull("preview"),
+                    )
+                )
+            }
+        }
+    }
+
+    private fun searchTracksFromDeezerPublicApi(term: String, limit: Int = SEARCH_LIMIT): JSONArray? {
         val url = DEEZER_API_BASE.toHttpUrl()
             .newBuilder()
             .addPathSegment("search")
             .addQueryParameter("q", term.trim())
-            .addQueryParameter("limit", SEARCH_LIMIT.toString())
+            .addQueryParameter("limit", limit.toString())
             .build()
         val request = Request.Builder()
             .url(url)

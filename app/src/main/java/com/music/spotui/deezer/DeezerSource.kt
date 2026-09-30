@@ -74,7 +74,33 @@ object DeezerSource {
             ?: searchQuery?.takeIf { it.isNotBlank() }?.let { DeezerSession.searchTrackId(it) }
             ?: return@withContext null
 
-        val tokens = DeezerSession.trackTokens(deezerId) ?: return@withContext null
+        rawForDeezerId(context, deezerId, effectiveIsrc, maxFormat)
+    }
+
+    /**
+     * Resolve one specific Deezer track id (e.g. a user-pinned manual match) to a raw stream,
+     * skipping any ISRC / text matching. Null if not logged in or the track can't be streamed.
+     */
+    suspend fun resolveRawByTrackId(
+        context: Context,
+        deezerTrackId: String,
+        maxFormat: Int? = null,
+    ): Resolved? = withContext(Dispatchers.IO) {
+        val arl = getDeezerArl(context) ?: return@withContext null
+        DeezerSession.setArl(arl)
+        DeezerSession.authorize()
+        if (!DeezerSession.hasArl()) return@withContext null
+        rawForDeezerId(context, deezerTrackId.trim(), null, maxFormat)
+    }
+
+    /** Token lookup + quality negotiation shared by the matched and the pinned paths. */
+    private fun rawForDeezerId(
+        context: Context,
+        deezerId: String,
+        effectiveIsrc: String?,
+        maxFormat: Int?,
+    ): Resolved? {
+        val tokens = DeezerSession.trackTokens(deezerId) ?: return null
 
         // Try the entitled quality, then degrade until one yields a url.
         val candidates = when (DeezerSession.entitledQuality) {
@@ -88,7 +114,7 @@ object DeezerSource {
                 // Persist tier for the settings screen (best-effort).
                 runCatching { setDeezerTier(context, tierLabel(DeezerSession.entitledQuality)) }
                 Log.d(TAG, "Deezer resolved id=${tokens.id} q=$q for isrc=$effectiveIsrc")
-                return@withContext Resolved(
+                return Resolved(
                     url = url,
                     encrypted = encrypted,
                     trackId = tokens.id,
@@ -97,7 +123,7 @@ object DeezerSource {
                 )
             }
         }
-        null
+        return null
     }
 
     /** Resolve a Spotify track to a playable `deezer://` URI. */
@@ -110,12 +136,27 @@ object DeezerSource {
     ): Result {
         if (getDeezerArl(context) == null) return Result.NotLoggedIn
         val raw = resolveRaw(context, spotifyId, isrc, searchQuery, maxFormat) ?: return Result.NotFound
+        return raw.toSuccess()
+    }
+
+    /** Resolve a specific Deezer track id (a pinned manual match) to a playable `deezer://` URI. */
+    suspend fun resolveByTrackId(
+        context: Context,
+        deezerTrackId: String,
+        maxFormat: Int? = null,
+    ): Result {
+        if (getDeezerArl(context) == null) return Result.NotLoggedIn
+        val raw = resolveRawByTrackId(context, deezerTrackId, maxFormat) ?: return Result.NotFound
+        return raw.toSuccess()
+    }
+
+    private fun Resolved.toSuccess(): Result.Success {
         val uri = "deezer://stream" +
-            "?u=${URLEncoder.encode(raw.url, "UTF-8")}" +
-            "&id=${raw.trackId}" +
-            "&enc=${if (raw.encrypted) 1 else 0}" +
-            "&fmt=${if (raw.isFlac) "flac" else "mp3"}"
-        return Result.Success(uri = uri, mimeFlac = raw.isFlac, qualityLabel = raw.qualityLabel)
+            "?u=${URLEncoder.encode(url, "UTF-8")}" +
+            "&id=$trackId" +
+            "&enc=${if (encrypted) 1 else 0}" +
+            "&fmt=${if (isFlac) "flac" else "mp3"}"
+        return Result.Success(uri = uri, mimeFlac = isFlac, qualityLabel = qualityLabel)
     }
 
     private fun qualityLabel(q: Int): String = when (q) {

@@ -7,6 +7,7 @@ import androidx.documentfile.provider.DocumentFile
 import com.music.spotui.data.api.Api
 import com.music.spotui.data.entity.SongsModel
 import com.music.spotui.data.preferences.BackupPref
+import com.music.spotui.di.SongPlayer
 import com.music.spotui.data.preferences.LocalPlaylist
 import com.music.spotui.data.preferences.LocalPlaylistPref
 import com.music.spotui.data.preferences.StreamQuality
@@ -17,6 +18,8 @@ import com.music.spotui.data.preferences.getDownloadQuality
 import com.music.spotui.data.preferences.getLikedSongIds
 import com.music.spotui.data.preferences.getUpdateRepoUrl
 import com.music.spotui.data.preferences.getWifiQuality
+import com.music.spotui.data.preferences.exportPortableAlternativeStreams
+import com.music.spotui.data.preferences.importPortableAlternativeStreams
 import com.music.spotui.data.preferences.isAutoPlayEnabled
 import com.music.spotui.data.preferences.isCrossfadeDjMode
 import com.music.spotui.data.preferences.isLibraryGridView
@@ -30,7 +33,9 @@ import com.music.spotui.data.preferences.setLibraryGridView
 import com.music.spotui.data.preferences.setUpdateRepoUrl
 import com.music.spotui.data.preferences.setVideoFallbackEnabled
 import com.music.spotui.data.preferences.setWifiQuality
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -97,6 +102,9 @@ object BackupHelper {
                     put("updateRepoUrl", getUpdateRepoUrl(context))
                 }
                 put("settings", settingsObj)
+
+                // 4. Manually pinned track matches (Alternative stream: YouTube + Deezer)
+                put("alternativeStreams", exportPortableAlternativeStreams(context))
             }
             put("data", data)
         }
@@ -148,6 +156,12 @@ object BackupHelper {
         }
     }
 
+    /** Fire-and-forget [performAutoBackup], for UI actions that change backed-up config. */
+    fun scheduleAutoBackup(context: Context) {
+        val appContext = context.applicationContext
+        CoroutineScope(Dispatchers.IO).launch { performAutoBackup(appContext) }
+    }
+
     suspend fun performAutoBackup(context: Context): Boolean = withContext(Dispatchers.IO) {
         if (!BackupPref.isAutoBackupEnabled(context)) return@withContext false
         val dirUriStr = BackupPref.getDirectoryUri(context) ?: return@withContext false
@@ -197,6 +211,7 @@ object BackupHelper {
             val data = root.getJSONObject("data")
             var restoredPlaylists = 0
             var restoredLiked = 0
+            var restoredAlternatives = 0
 
             // 1. Restore Local Playlists
             if (data.has("localPlaylists")) {
@@ -255,8 +270,17 @@ object BackupHelper {
                 if (s.has("updateRepoUrl")) setUpdateRepoUrl(context, s.getString("updateRepoUrl"))
             }
 
+            // 4. Restore pinned track matches (Alternative stream). Older backups don't have this section.
+            data.optJSONObject("alternativeStreams")?.let { pins ->
+                restoredAlternatives = importPortableAlternativeStreams(context, pins)
+                // Already-resolved streams may point at the old (auto-matched) track; drop them
+                // so the restored pins are used on the next play. Pins themselves stay untouched.
+                if (restoredAlternatives > 0) SongPlayer.dropResolvedStreams(context)
+            }
+
             Api.HomeCache.clear()
-            Pair(true, "Restored $restoredPlaylists playlist(s) and $restoredLiked liked song(s)!")
+            val pinsNote = if (restoredAlternatives > 0) ", $restoredAlternatives pinned stream match(es)" else ""
+            Pair(true, "Restored $restoredPlaylists playlist(s), $restoredLiked liked song(s)$pinsNote!")
         }.getOrElse { e ->
             Log.e(TAG, "Error restoring backup", e)
             Pair(false, "Failed to restore backup: ${e.message}")

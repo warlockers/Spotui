@@ -125,6 +125,7 @@ import com.music.spotui.data.preferences.clearAlternativeStream
 import com.music.spotui.data.preferences.getAlternativeStream
 import com.music.spotui.data.preferences.isSongLiked
 import com.music.spotui.data.preferences.removeLikedSongId
+import com.music.spotui.data.preferences.setDeezerAlternativeStream
 import com.music.spotui.data.preferences.setLocalAlternativeStream
 import com.music.spotui.data.preferences.setYouTubeAlternativeStream
 import com.music.spotui.di.Palette
@@ -1835,6 +1836,7 @@ fun PlayerOptionsSheet(
     var showSavedIn by remember { mutableStateOf(false) }
     var showAlternativeStream by remember { mutableStateOf(false) }
     var showYouTubeSearch by remember { mutableStateOf(false) }
+    var showDeezerSearch by remember { mutableStateOf(false) }
     val altSearchViewModel: com.music.spotui.ui.viewmodel.AlternativeSearchViewModel =
         hiltViewModel()
 
@@ -1932,12 +1934,41 @@ fun PlayerOptionsSheet(
                     onUseVideoId = { videoId ->
                         val song = currentSong ?: return@YouTubeSearchView
                         setYouTubeAlternativeStream(context, alternativeKey, videoId)
+                        com.music.spotui.util.BackupHelper.scheduleAutoBackup(context)
                         currentAlternative = getAlternativeStream(context, alternativeKey)
                         showYouTubeSearch = false
                         showAlternativeStream = false
                         Toast.makeText(
                             context,
                             "Alternative stream set to YouTube",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                        SongPlayer.invalidateSongCache(song, context, reloadIfPlaying = true, clearAltStream = false)
+                        onDismiss()
+                    },
+                )
+            } else if (showDeezerSearch) {
+                DeezerSearchView(
+                    viewModel = altSearchViewModel,
+                    songTitle = title,
+                    songArtist = singer,
+                    enabled = currentSong != null,
+                    onBack = { showDeezerSearch = false },
+                    onUseTrack = { hit ->
+                        val song = currentSong ?: return@DeezerSearchView
+                        setDeezerAlternativeStream(
+                            context,
+                            alternativeKey,
+                            hit.trackId,
+                            listOf(hit.title, hit.artist).filter { it.isNotBlank() }.joinToString(" - "),
+                        )
+                        com.music.spotui.util.BackupHelper.scheduleAutoBackup(context)
+                        currentAlternative = getAlternativeStream(context, alternativeKey)
+                        showDeezerSearch = false
+                        showAlternativeStream = false
+                        Toast.makeText(
+                            context,
+                            "Alternative stream set to Deezer",
                             Toast.LENGTH_SHORT
                         ).show()
                         SongPlayer.invalidateSongCache(song, context, reloadIfPlaying = true, clearAltStream = false)
@@ -1960,6 +1991,7 @@ fun PlayerOptionsSheet(
                             ).show()
                         } else {
                             setYouTubeAlternativeStream(context, alternativeKey, videoId)
+                            com.music.spotui.util.BackupHelper.scheduleAutoBackup(context)
                             currentAlternative = getAlternativeStream(context, alternativeKey)
                             Toast.makeText(
                                 context,
@@ -1975,11 +2007,13 @@ fun PlayerOptionsSheet(
                     onClear = {
                         val song = currentSong ?: return@AlternativeStreamEditor
                         clearAlternativeStream(context, alternativeKey)
+                        com.music.spotui.util.BackupHelper.scheduleAutoBackup(context)
                         currentAlternative = null
                         Toast.makeText(context, "Alternative stream cleared", Toast.LENGTH_SHORT).show()
                         SongPlayer.invalidateSongCache(song, context, reloadIfPlaying = true, clearAltStream = true)
                     },
                     onOpenYouTubeSearch = { showYouTubeSearch = true },
+                    onOpenDeezerSearch = { showDeezerSearch = true },
                 )
             } else if (!showSleep) {
                 // ── Now-playing header ──
@@ -2204,6 +2238,7 @@ fun AlternativeStreamEditor(
     onPickLocal: () -> Unit,
     onClear: () -> Unit,
     onOpenYouTubeSearch: () -> Unit,
+    onOpenDeezerSearch: () -> Unit,
 ) {
     var youtubeText by remember { mutableStateOf("") }
     Column(
@@ -2280,6 +2315,51 @@ fun AlternativeStreamEditor(
                     contentDescription = "Open on YouTube",
                 )
             }
+        } else if (currentAlternative != null && currentAlternative.isDeezer) {
+            val context = LocalContext.current
+            val trackId = currentAlternative.value
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFF282828))
+                    .clickable {
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse("https://www.deezer.com/track/$trackId"))
+                        )
+                    }
+                    .padding(12.dp),
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Deezer alternative",
+                        color = Color(AppPalette.toArgb()),
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = currentAlternative.label.ifBlank { "Deezer track $trackId" },
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        maxLines = 2,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = "Track ID $trackId",
+                        color = Color(0xFFB3B3B3),
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                    )
+                }
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.OpenInNew,
+                    tint = Color(0xFFB3B3B3),
+                    modifier = Modifier.size(18.dp),
+                    contentDescription = "Open on Deezer",
+                )
+            }
         } else if (currentAlternative != null && currentAlternative.isLocal) {
             Text(
                 text = "Current: local file ${currentAlternative.label.ifBlank { currentAlternative.value }}",
@@ -2325,6 +2405,14 @@ fun AlternativeStreamEditor(
             trailingArrow = true,
         ) {
             onOpenYouTubeSearch()
+        }
+        PlayerMenuRow(
+            icon = Icons.Default.Search,
+            label = "Search Deezer",
+            enabled = enabled,
+            trailingArrow = true,
+        ) {
+            onOpenDeezerSearch()
         }
         PlayerMenuRow(
             icon = Icons.Default.Add,
@@ -2501,6 +2589,214 @@ private fun YouTubeSearchResultRow(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = song.artists.joinToString(", ") { it.name },
+                    color = Color(0xFFB3B3B3),
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+                if (durationText.isNotBlank()) {
+                    Text(
+                        text = " · $durationText",
+                        color = Color(0xFFB3B3B3),
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.width(4.dp))
+        if (isResolving) {
+            androidx.compose.material3.CircularProgressIndicator(
+                color = AppPalette,
+                modifier = Modifier
+                    .size(28.dp)
+                    .padding(4.dp),
+                strokeWidth = 2.dp,
+            )
+        } else {
+            Icon(
+                imageVector = if (isPreviewing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                tint = if (isPreviewing) AppPalette else Color(0xFFB3B3B3),
+                modifier = Modifier
+                    .size(32.dp)
+                    .clickable(enabled = enabled) { onPreview() }
+                    .padding(4.dp),
+                contentDescription = "Preview",
+            )
+        }
+        Spacer(Modifier.width(2.dp))
+        Icon(
+            imageVector = Icons.Default.Check,
+            tint = Color(0xFFB3B3B3),
+            modifier = Modifier
+                .size(32.dp)
+                .clickable(enabled = enabled) { onSelect() }
+                .padding(4.dp),
+            contentDescription = "Use this",
+        )
+    }
+}
+
+@OptIn(ExperimentalGlideComposeApi::class)
+@Composable
+fun DeezerSearchView(
+    viewModel: com.music.spotui.ui.viewmodel.AlternativeSearchViewModel,
+    songTitle: String,
+    songArtist: String,
+    enabled: Boolean,
+    onBack: () -> Unit,
+    onUseTrack: (com.music.spotui.providers.DeezerAudioProvider.SearchHit) -> Unit,
+) {
+    LaunchedEffect(songTitle, songArtist) {
+        viewModel.initDeezerQuery(songTitle, songArtist)
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { viewModel.stopPreview() }
+    }
+
+    BackHandler { viewModel.stopPreview(); onBack() }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 16.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Icon(
+                imageVector = Icons.Default.KeyboardArrowDown,
+                tint = Color.White,
+                modifier = Modifier
+                    .size(24.dp)
+                    .clickable { viewModel.stopPreview(); onBack() },
+                contentDescription = null,
+            )
+            Spacer(Modifier.width(12.dp))
+            Text(
+                "Search Deezer",
+                color = Color.White,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        Spacer(Modifier.height(14.dp))
+        OutlinedTextField(
+            value = viewModel.deezerQuery,
+            onValueChange = { viewModel.updateDeezerQuery(it) },
+            enabled = enabled,
+            singleLine = true,
+            textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 14.sp),
+            label = { Text("Search query", color = Color(0xFFB3B3B3)) },
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(12.dp))
+
+        viewModel.deezerError?.let { message ->
+            Text(
+                text = message,
+                color = Color(0xFFE57373),
+                fontSize = 13.sp,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
+
+        when {
+            viewModel.isSearchingDeezer -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(120.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    androidx.compose.material3.CircularProgressIndicator(
+                        color = AppPalette,
+                        modifier = Modifier.size(32.dp),
+                    )
+                }
+            }
+
+            viewModel.deezerResults.isEmpty() && viewModel.deezerQuery.isNotBlank() && viewModel.deezerError == null -> {
+                Text(
+                    text = "No results found",
+                    color = Color(0xFFB3B3B3),
+                    fontSize = 13.sp,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+
+            else -> {
+                androidx.compose.foundation.lazy.LazyColumn(
+                    modifier = Modifier.heightIn(max = 360.dp),
+                ) {
+                    items(
+                        count = viewModel.deezerResults.size,
+                        key = { viewModel.deezerResults[it].trackId },
+                    ) { index ->
+                        val hit = viewModel.deezerResults[index]
+                        DeezerSearchResultRow(
+                            hit = hit,
+                            isPreviewing = viewModel.previewingDeezerId == hit.trackId,
+                            isResolving = viewModel.previewingDeezerId == hit.trackId && viewModel.isResolvingPreview,
+                            enabled = enabled,
+                            onPreview = { viewModel.previewDeezer(hit) },
+                            onSelect = {
+                                viewModel.stopPreview()
+                                onUseTrack(hit)
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalGlideComposeApi::class)
+@Composable
+private fun DeezerSearchResultRow(
+    hit: com.music.spotui.providers.DeezerAudioProvider.SearchHit,
+    isPreviewing: Boolean,
+    isResolving: Boolean,
+    enabled: Boolean,
+    onPreview: () -> Unit,
+    onSelect: () -> Unit,
+) {
+    val durationText = hit.durationMs?.let { ms ->
+        val total = ms / 1000
+        "%d:%02d".format(total / 60, total % 60)
+    }.orEmpty()
+    val subtitle = listOfNotNull(
+        hit.artist.takeIf { it.isNotBlank() },
+        hit.album?.takeIf { it.isNotBlank() },
+    ).joinToString(" · ")
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+    ) {
+        GlideImage(
+            model = hit.coverUrl,
+            modifier = Modifier
+                .size(44.dp)
+                .clip(RoundedCornerShape(4.dp)),
+            contentScale = ContentScale.Crop,
+            contentDescription = null,
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = hit.title,
+                color = Color.White,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = subtitle,
                     color = Color(0xFFB3B3B3),
                     fontSize = 12.sp,
                     maxLines = 1,

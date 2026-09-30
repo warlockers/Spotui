@@ -13,6 +13,9 @@ import androidx.lifecycle.viewModelScope
 import com.metrolist.innertube.YouTube
 import com.metrolist.innertube.models.SongItem
 import com.metrolist.music.utils.YTPlayerUtils
+import com.music.spotui.deezer.DeezerAwareDataSourceFactory
+import com.music.spotui.deezer.DeezerSource
+import com.music.spotui.providers.DeezerAudioProvider
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
@@ -39,6 +42,21 @@ class AlternativeSearchViewModel @Inject constructor(
         private set
     var error by mutableStateOf<String?>(null)
         private set
+
+    // ── Deezer manual match ──
+    var deezerResults by mutableStateOf<List<DeezerAudioProvider.SearchHit>>(emptyList())
+        private set
+    var isSearchingDeezer by mutableStateOf(false)
+        private set
+    var deezerQuery by mutableStateOf("")
+        private set
+    var deezerError by mutableStateOf<String?>(null)
+        private set
+    var previewingDeezerId by mutableStateOf<String?>(null)
+        private set
+
+    private var deezerSearchJob: Job? = null
+    private var lastDeezerInitQuery: String = ""
 
     private var previewPlayer: ExoPlayer? = null
     private var searchJob: Job? = null
@@ -128,6 +146,115 @@ class AlternativeSearchViewModel @Inject constructor(
         }
     }
 
+    // ── Deezer search ────────────────────────────────────────────────────────
+
+    fun initDeezerQuery(title: String, artist: String) {
+        // Primary artist only: "Artist A, Artist B" as free text hurts Deezer's relevance.
+        val query = "$title ${artist.substringBefore(',').trim()}".trim()
+        if (query == lastDeezerInitQuery) return
+        lastDeezerInitQuery = query
+        deezerQuery = query
+        deezerResults = emptyList()
+        deezerError = null
+        searchDeezer(query, debounce = false)
+    }
+
+    fun updateDeezerQuery(query: String) {
+        deezerQuery = query
+        searchDeezer(query, debounce = true)
+    }
+
+    private fun searchDeezer(query: String, debounce: Boolean) {
+        deezerSearchJob?.cancel()
+        if (query.isBlank()) {
+            deezerResults = emptyList()
+            deezerError = null
+            isSearchingDeezer = false
+            return
+        }
+        deezerSearchJob = viewModelScope.launch {
+            if (debounce) delay(350)
+            isSearchingDeezer = true
+            deezerError = null
+            val hits = withContext(Dispatchers.IO) {
+                runCatching { DeezerAudioProvider.searchManual(query) }
+                    .onFailure { Log.w(TAG, "Deezer search failed", it) }
+                    .getOrNull()
+            }
+            if (hits == null) {
+                deezerError = "Search failed"
+                deezerResults = emptyList()
+            } else {
+                deezerResults = hits
+            }
+            isSearchingDeezer = false
+        }
+    }
+
+    /**
+     * Preview a Deezer hit. Uses the same full-stream resolution as real playback (low quality,
+     * to start fast); without a usable Deezer login it falls back to Deezer's public 30s clip.
+     */
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    fun previewDeezer(hit: DeezerAudioProvider.SearchHit) {
+        if (previewingDeezerId == hit.trackId) {
+            stopPreview()
+            return
+        }
+        stopPreview()
+        previewingDeezerId = hit.trackId
+        isResolvingPreview = true
+        deezerError = null
+        com.music.spotui.di.SongPlayer.pause()
+        resolveJob = viewModelScope.launch {
+            val uri = withContext(Dispatchers.IO) {
+                val full = runCatching {
+                    DeezerSource.resolveByTrackId(context, hit.trackId, maxFormat = 1)
+                }.getOrNull()
+                (full as? DeezerSource.Result.Success)?.uri ?: hit.previewUrl
+            }
+            if (uri == null) {
+                previewingDeezerId = null
+                isResolvingPreview = false
+                deezerError = "Preview unavailable for this track"
+                return@launch
+            }
+            val player = getOrCreatePreviewPlayer()
+            withContext(Dispatchers.Main) {
+                player.clearMediaItems()
+                player.addListener(object : androidx.media3.common.Player.Listener {
+                    override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                        Log.w(TAG, "Deezer preview failed for ${hit.trackId}", error)
+                        if (previewingDeezerId == hit.trackId) {
+                            previewingDeezerId = null
+                            isResolvingPreview = false
+                            deezerError = "Preview failed"
+                        }
+                    }
+
+                    override fun onPlaybackStateChanged(state: Int) {
+                        if (state == androidx.media3.common.Player.STATE_ENDED &&
+                            previewingDeezerId == hit.trackId
+                        ) {
+                            previewingDeezerId = null
+                        }
+                    }
+                })
+                val item = MediaItem.Builder()
+                    .setUri(uri)
+                    .apply {
+                        // deezer:// has no file extension; hint the container like the main player does.
+                        if (uri.startsWith("deezer://")) setMimeType(androidx.media3.common.MimeTypes.AUDIO_MPEG)
+                    }
+                    .build()
+                player.setMediaItem(item)
+                player.prepare()
+                player.play()
+            }
+            isResolvingPreview = false
+        }
+    }
+
     fun stopPreview() {
         resolveJob?.cancel()
         resolveJob = null
@@ -137,12 +264,21 @@ class AlternativeSearchViewModel @Inject constructor(
         }
         previewPlayer = null
         previewingVideoId = null
+        previewingDeezerId = null
         isResolvingPreview = false
     }
 
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     private fun getOrCreatePreviewPlayer(): ExoPlayer {
         previewPlayer?.let { return it }
         val p = ExoPlayer.Builder(context)
+            // Same routing as the main player: deezer:// (encrypted CDN) is decrypted on the fly,
+            // everything else (YouTube URLs, Deezer clips) goes through the default HTTP stack.
+            .setMediaSourceFactory(
+                androidx.media3.exoplayer.source.DefaultMediaSourceFactory(
+                    DeezerAwareDataSourceFactory(androidx.media3.datasource.DefaultDataSource.Factory(context))
+                )
+            )
             .setAudioAttributes(
                 androidx.media3.common.AudioAttributes.Builder()
                     .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MUSIC)

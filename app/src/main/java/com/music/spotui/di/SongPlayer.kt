@@ -95,10 +95,10 @@ object SongPlayer {
         videoCandidatesCache.clear()
         inFlightResolutions.values.forEach { runCatching { it.cancel() } }
         inFlightResolutions.clear()
-        alternativeKeyRegistry.clear()
+        // NOTE: manually pinned matches ("Alternative stream") are user configuration, not cache:
+        // neither the stored pins nor the song→pin-key registry are cleared here.
         com.metrolist.music.utils.YTPlayerUtils.resetSession(appContext)
         com.music.spotui.data.preferences.clearAllCachedStreams(appContext)
-        com.music.spotui.data.preferences.clearAllAlternativeStreams(appContext)
         com.music.spotui.data.preferences.clearAllResolvedVideos(appContext)
         runCatching {
             mediaCache?.keys?.forEach { key ->
@@ -120,6 +120,18 @@ object SongPlayer {
                 playSong(playingUrl, appContext, if (currentId != null && currentId != 0) "song/$currentId" else null)
             }
         }
+    }
+
+    /**
+     * Drops already-resolved stream URLs (memory + disk) without touching playback, YouTube
+     * sessions or pinned matches. Used after a backup restore so restored pins take effect.
+     */
+    fun dropResolvedStreams(context: Context) {
+        streamCache.clear()
+        sourceCache.clear()
+        qualityCache.clear()
+        qualityTierCache.clear()
+        com.music.spotui.data.preferences.clearAllCachedStreams(context.applicationContext)
     }
 
     fun onQualitySettingChanged(context: Context) {
@@ -402,7 +414,7 @@ object SongPlayer {
         song: com.music.spotui.data.entity.SongsModel,
         context: Context,
         reloadIfPlaying: Boolean = true,
-        clearAltStream: Boolean = true,
+        clearAltStream: Boolean = false,
     ) {
         invalidateSongCacheByUrl(
             songUrl = song.url,
@@ -418,7 +430,7 @@ object SongPlayer {
         songUrl: String,
         context: Context,
         reloadIfPlaying: Boolean = true,
-        clearAltStream: Boolean = true,
+        clearAltStream: Boolean = false,
         songTitle: String? = null,
         songId: Int? = null,
     ) {
@@ -431,7 +443,8 @@ object SongPlayer {
 
         val matchSong = boundState?.queue?.value?.firstOrNull { it.url == songUrl }
 
-        // Clear stored alternative stream overrides if requested (e.g. manual Invalidate Cache tap)
+        // Pinned alternative streams are configuration: only removed when the caller explicitly
+        // asks (the "Clear alternative stream" action), never by a plain cache invalidation.
         if (clearAltStream) {
             val altKey = alternativeKeyRegistry.remove(songUrl)
             if (altKey != null) {
@@ -442,7 +455,7 @@ object SongPlayer {
                 com.music.spotui.data.preferences.clearAlternativeStream(appContext, key)
             }
             if (songId != null && songId != 0) {
-                com.music.spotui.data.preferences.clearAlternativeStream(appContext, "song/$songId")
+                com.music.spotui.data.preferences.clearAlternativeStream(appContext, "song:$songId")
             }
         }
 
@@ -888,6 +901,55 @@ object SongPlayer {
         }
     }
 
+    /**
+     * Resolves one specific, user-pinned Deezer track id (no matching involved): direct Deezer
+     * session first, then the Deezer mirror. Returns (uri, qualityLabel) or null.
+     */
+    private suspend fun resolveDeezerTrackById(
+        appContext: Context,
+        deezerTrackId: String,
+        maxFormat: Int?,
+        durationMs: Long?,
+        forPlayback: Boolean,
+    ): Pair<String, String>? {
+        if (!deezerEnabled) return null
+        if (com.music.spotui.data.preferences.isDeezerEnabled(appContext)) {
+            val direct = runCatching {
+                com.music.spotui.deezer.DeezerSource.resolveByTrackId(appContext, deezerTrackId, maxFormat)
+            }.getOrNull()
+            if (direct is com.music.spotui.deezer.DeezerSource.Result.Success) {
+                if (forPlayback) logResolution("✓ Deezer Direct SUCCESS (${direct.qualityLabel})")
+                return direct.uri to direct.qualityLabel
+            }
+            if (forPlayback) logResolution("✗ Deezer Direct: ${direct?.javaClass?.simpleName ?: "error"}")
+        } else if (forPlayback) {
+            logResolution("ℹ Deezer account not logged in / disabled — trying Deezer mirror.")
+        }
+
+        // Blank title/artist: the mirror is only allowed to resolve the pinned id itself
+        // (every fuzzy candidate is rejected by its scorer), never to substitute another track.
+        val mirror = runCatching {
+            com.music.spotui.providers.DeezerAudioProvider.resolve(
+                com.music.spotui.providers.DeezerAudioProvider.Query(
+                    mediaId = deezerTrackId,
+                    title = "",
+                    artists = emptyList(),
+                    album = null,
+                    isrc = null,
+                    durationMs = durationMs,
+                )
+            )
+        }
+        mirror.onFailure { err ->
+            if (forPlayback) logResolution("✗ Deezer Mirror: ${err.javaClass.simpleName}: ${err.message?.take(200)}")
+        }
+        return mirror.getOrNull()?.let { res ->
+            val label = if (res.codecs.equals("flac", ignoreCase = true)) "16-bit FLAC" else "MP3 320 kbps"
+            if (forPlayback) logResolution("✓ Deezer Mirror SUCCESS ($label)")
+            res.mediaUri to label
+        }
+    }
+
     private suspend fun doResolveStreamUrl(song: String, appContext: Context, forPlayback: Boolean): String? {
 
         val quality = com.music.spotui.data.preferences.currentStreamingQuality(appContext)
@@ -1004,6 +1066,43 @@ object SongPlayer {
                     qualityCache[song] = if (forPlayback) currentQuality else ytQuality
 
                     playback.streamUrl
+                }
+                alt.isDeezer -> {
+                    if (forPlayback) {
+                        currentSource = "Deezer"
+                        currentQuality = ""
+                        updateResolveStatus(true, "Locating pinned Deezer track...")
+                        logResolution("Resolving user alternative Deezer track ${alt.value} (${alt.label})...")
+                    }
+                    val pinned = resolveDeezerTrackById(
+                        appContext = appContext,
+                        deezerTrackId = alt.value,
+                        maxFormat = if (quality.deezerFirst) quality.deezerMaxFormat else null,
+                        durationMs = songDurationMs,
+                        forPlayback = forPlayback,
+                    )
+                    if (pinned == null) {
+                        // The user explicitly pinned this track; don't silently play a fuzzy match instead.
+                        if (forPlayback) {
+                            logResolution("✗ Pinned Deezer track ${alt.value} could not be resolved (check Deezer login / availability).")
+                            updateResolveStatus(false)
+                        }
+                        return null
+                    }
+                    val (dzUrl, dzQuality) = pinned
+                    val isLossless = dzQuality.contains("FLAC", ignoreCase = true)
+                    val sourceLabel = if (isLossless) "Lossless • Deezer" else "Deezer"
+                    if (forPlayback) {
+                        currentSource = sourceLabel
+                        currentQuality = dzQuality
+                        boundState?.updateResolveDetailNote("Source: Deezer (manual match) • Format: $dzQuality")
+                        logResolution("✓ Alternative Deezer stream resolved ($dzQuality)")
+                        updateResolveStatus(false)
+                    }
+                    streamCache[song] = dzUrl
+                    sourceCache[song] = sourceLabel
+                    qualityCache[song] = dzQuality
+                    dzUrl
                 }
                 else -> {
                     if (forPlayback) updateResolveStatus(false)
