@@ -96,6 +96,7 @@ object YTPlayerUtils {
         audioQuality: AudioQuality,
         connectivityManager: ConnectivityManager,
         skipValidation: Boolean = false,
+        bitrateRangeKbps: IntRange? = null,
     ): Result<PlaybackData> = runCatching {
         Timber.tag(TAG).d("=== PLAYER RESPONSE FOR PLAYBACK ===")
         Timber.tag(TAG).d("videoId: $videoId")
@@ -307,6 +308,7 @@ object YTPlayerUtils {
                         responseToUse,
                         audioQuality,
                         connectivityManager,
+                        bitrateRangeKbps,
                     )
 
                 if (format == null) {
@@ -500,27 +502,69 @@ object YTPlayerUtils {
         playerResponse: PlayerResponse,
         audioQuality: AudioQuality,
         connectivityManager: ConnectivityManager,
+        bitrateRangeKbps: IntRange? = null,
     ): PlayerResponse.StreamingData.Format? {
-        Timber.tag(logTag).d("Finding format with audioQuality: $audioQuality, network metered: ${connectivityManager.isActiveNetworkMetered}")
-
-        val format = playerResponse.streamingData?.adaptiveFormats
+        val candidates = playerResponse.streamingData?.adaptiveFormats
             ?.filter { it.isAudio && it.isOriginal }
-            ?.maxByOrNull {
+            .orEmpty()
+        if (candidates.isEmpty()) {
+            Timber.tag(logTag).d("No suitable audio format found")
+            return null
+        }
+
+        val format = if (bitrateRangeKbps != null) {
+            selectFormatInRange(candidates, bitrateRangeKbps, audioQuality == AudioQuality.LOW)
+        } else {
+            candidates.maxByOrNull {
                 it.bitrate * when (audioQuality) {
                     AudioQuality.AUTO -> if (connectivityManager.isActiveNetworkMetered) -1 else 1
                     AudioQuality.HIGH -> 1
                     AudioQuality.LOW -> -1
-                } + (if (it.mimeType.startsWith("audio/webm")) 10240 else 0) // prefer opus stream
+                } + (if (it.isOpus()) 10240 else 0)
             }
-
-        if (format != null) {
-            Timber.tag(logTag).d("Selected format: ${format.mimeType}, bitrate: ${format.bitrate}")
-        } else {
-            Timber.tag(logTag).d("No suitable audio format found")
         }
 
+        if (format != null) {
+            Timber.tag(logTag).d("Selected format: ${format.mimeType}, itag: ${format.itag}, kbps: ${format.effectiveKbps()}")
+        }
         return format
     }
+
+    private fun PlayerResponse.StreamingData.Format.isOpus(): Boolean =
+        mimeType.contains("opus", ignoreCase = true)
+
+    private fun PlayerResponse.StreamingData.Format.effectiveKbps(): Int =
+        (averageBitrate?.takeIf { it > 0 } ?: bitrate) / 1000
+
+    private fun selectFormatInRange(
+        candidates: List<PlayerResponse.StreamingData.Format>,
+        range: IntRange,
+        preferLowest: Boolean,
+    ): PlayerResponse.StreamingData.Format? {
+        fun gap(format: PlayerResponse.StreamingData.Format): Int {
+            val kbps = format.effectiveKbps()
+            return when {
+                kbps < range.first -> range.first - kbps
+                kbps > range.last -> kbps - range.last
+                else -> 0
+            }
+        }
+
+        val tolerance = (range.last * 0.08).toInt()
+        val nearRange = candidates.filter { gap(it) <= tolerance }
+        val pool = nearRange.ifEmpty {
+            val smallestGap = candidates.minOf { gap(it) }
+            candidates.filter { gap(it) == smallestGap }
+        }
+
+        val opusPool = pool.filter { it.isOpus() }.ifEmpty { pool }
+        return if (preferLowest) {
+            opusPool.minByOrNull { it.effectiveKbps() }
+        } else {
+            opusPool.maxByOrNull { it.effectiveKbps() }
+        }
+    }
+
     /**
      * Checks if the stream url returns a successful status.
      *

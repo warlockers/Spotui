@@ -125,6 +125,7 @@ class AlternativeSearchViewModel @Inject constructor(
                     audioQuality = quality.audioQuality,
                     connectivityManager = cm,
                     skipValidation = true,
+                    bitrateRangeKbps = quality.minKbps..quality.maxKbps,
                 )
             }
             playback.fold(

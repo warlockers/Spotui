@@ -347,14 +347,14 @@ fun SettingsScreen(navController: NavController) {
             QualityPicker(
                 title = "Streaming over Wi-Fi",
                 selected = wifiQ,
-                showFlacWarning = wifiQ == StreamQuality.LOSSLESS || wifiQ.deezerFirst,
+                showFlacWarning = wifiQ == StreamQuality.LOSSLESS,
                 onDeezerLogin = { navController.navigate(com.music.spotui.ui.navigation.Routes.DeezerLogin.route) }
             ) { wifiQ = it; setWifiQuality(context, it) }
 
             QualityPicker(
                 title = "Streaming over cellular",
                 selected = cellQ,
-                showFlacWarning = cellQ == StreamQuality.LOSSLESS || cellQ.deezerFirst,
+                showFlacWarning = cellQ == StreamQuality.LOSSLESS,
                 onDeezerLogin = { navController.navigate(com.music.spotui.ui.navigation.Routes.DeezerLogin.route) }
             ) { cellQ = it; setCellularQuality(context, it) }
 
@@ -1080,7 +1080,7 @@ private fun QualityPicker(
     Column(modifier = Modifier.padding(vertical = 8.dp)) {
         Text(title, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(8.dp))
-        StreamQuality.values().filter { !forDownload || it.availableForDownload }.forEach { q ->
+        StreamQuality.values().forEach { q ->
             val isSel = q == selected
             Column {
                 Row(
@@ -1105,7 +1105,7 @@ private fun QualityPicker(
                         )
                     }
                 }
-                if (isSel && (q == StreamQuality.LOSSLESS || q.deezerFirst) && showFlacWarning) {
+                if (isSel && q == StreamQuality.LOSSLESS && showFlacWarning) {
                     Spacer(Modifier.height(6.dp))
                     Column(
                         modifier = Modifier
@@ -1116,14 +1116,14 @@ private fun QualityPicker(
                             .padding(horizontal = 12.dp, vertical = 10.dp)
                     ) {
                         Text(
-                            text = if (q.deezerFirst) "⚠️ Deezer login recommended" else "⚠️ Deezer Login Recommended for Lossless",
+                            text = "⚠️ Deezer Login Recommended for Lossless",
                             color = Color(0xFFFFB74D),
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Bold,
                         )
                         Spacer(Modifier.height(4.dp))
                         Text(
-                            text = if (q.deezerFirst) "This mode always plays from Deezer first. Without a Deezer login only the Deezer mirror is tried, then the standard algorithm." else "Deezer is the most reliable & successful provider for Lossless FLAC playback and downloads. Please log in to Deezer for optimal Lossless availability.",
+                            text = "Deezer is the most reliable & successful provider for Lossless FLAC playback and downloads. Please log in to Deezer for optimal Lossless availability.",
                             color = Color(0xFFFFE0B2),
                             fontSize = 12.sp,
                             lineHeight = 16.sp,

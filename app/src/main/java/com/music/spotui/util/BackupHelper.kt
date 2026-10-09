@@ -259,9 +259,9 @@ object BackupHelper {
             // 3. Restore Settings
             if (data.has("settings")) {
                 val s = data.getJSONObject("settings")
-                if (s.has("wifiQuality")) runCatching { setWifiQuality(context, StreamQuality.valueOf(s.getString("wifiQuality"))) }
-                if (s.has("cellularQuality")) runCatching { setCellularQuality(context, StreamQuality.valueOf(s.getString("cellularQuality"))) }
-                if (s.has("downloadQuality")) runCatching { setDownloadQuality(context, StreamQuality.valueOf(s.getString("downloadQuality"))) }
+                if (s.has("wifiQuality")) StreamQuality.fromName(s.getString("wifiQuality"))?.let { setWifiQuality(context, it) }
+                if (s.has("cellularQuality")) StreamQuality.fromName(s.getString("cellularQuality"))?.let { setCellularQuality(context, it) }
+                if (s.has("downloadQuality")) StreamQuality.fromName(s.getString("downloadQuality"))?.let { setDownloadQuality(context, it) }
                 if (s.has("crossfadeMs")) setCrossfadeMs(context, s.getInt("crossfadeMs"))
                 if (s.has("crossfadeDjMode")) setCrossfadeDjMode(context, s.getBoolean("crossfadeDjMode"))
                 if (s.has("videoFallback")) setVideoFallbackEnabled(context, s.getBoolean("videoFallback"))

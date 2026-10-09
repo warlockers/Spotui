@@ -4,38 +4,29 @@ import android.content.Context
 import android.net.ConnectivityManager
 import com.metrolist.music.constants.AudioQuality
 
-/**
- * User-facing audio quality tiers (Spotify-style). Each maps to the YouTube format
- * selector ([AudioQuality]) and whether to attempt a lossless FLAC source first.
- */
 enum class StreamQuality(
     val label: String,
     val detail: String,
     val audioQuality: AudioQuality,
     val lossless: Boolean,
-    /**
-     * When true, Deezer is always tried first (regardless of bitrate). If the track
-     * isn't available on Deezer, resolution continues with the regular algorithm
-     * for [audioQuality] (YouTube etc.).
-     */
-    val deezerFirst: Boolean = false,
-    /** Highest Deezer format id allowed for [deezerFirst] modes (3 = MP3 320, 1 = MP3 128). */
-    val deezerMaxFormat: Int = 9,
-    /** Whether this option is offered for downloads (Deezer-first modes are playback only). */
-    val availableForDownload: Boolean = true,
+    val minKbps: Int,
+    val maxKbps: Int,
 ) {
-    LOW("Low", "Data saver — smallest size", AudioQuality.LOW, false),
-    NORMAL("Normal", "Balanced for the network", AudioQuality.AUTO, false),
-    HIGH("High", "Best compressed quality", AudioQuality.HIGH, false),
-    LOSSLESS("Lossless", "FLAC when available, else High", AudioQuality.HIGH, true),
-    DEEZER_NORMAL(
-        "Deezer + Normal", "Always Deezer first (MP3 128), else Normal",
-        AudioQuality.AUTO, false, deezerFirst = true, deezerMaxFormat = 1, availableForDownload = false,
-    ),
-    DEEZER_HIGH(
-        "Deezer + High", "Always Deezer first (up to MP3 320), else High",
-        AudioQuality.HIGH, false, deezerFirst = true, deezerMaxFormat = 3, availableForDownload = false,
-    ),
+    LOW("Low", "Data saver — up to 65 kbps", AudioQuality.LOW, false, 0, 65),
+    NORMAL("Normal", "Balanced — 65 to 130 kbps", AudioQuality.AUTO, false, 65, 130),
+    HIGH("High", "Best compressed — 100 to 320 kbps", AudioQuality.HIGH, false, 100, 320),
+    LOSSLESS("Lossless", "Best possible quality, else High", AudioQuality.HIGH, true, 100, 320);
+
+    fun accepts(kbps: Int): Boolean = kbps <= 0 || kbps in minKbps..maxKbps
+
+    companion object {
+        fun fromName(name: String?): StreamQuality? = when (name) {
+            null -> null
+            "DEEZER_NORMAL" -> NORMAL
+            "DEEZER_HIGH" -> HIGH
+            else -> values().firstOrNull { it.name == name }
+        }
+    }
 }
 
 private const val PREF = "settings_prefs"
@@ -61,7 +52,7 @@ const val CROSSFADE_DEFAULT_MS = 6000
 private fun prefs(c: Context) = c.getSharedPreferences(PREF, Context.MODE_PRIVATE)
 
 private fun readQ(c: Context, key: String, def: StreamQuality): StreamQuality =
-    runCatching { StreamQuality.valueOf(prefs(c).getString(key, def.name)!!) }.getOrDefault(def)
+    StreamQuality.fromName(prefs(c).getString(key, def.name)) ?: def
 
 private fun writeQ(c: Context, key: String, q: StreamQuality) =
     prefs(c).edit().putString(key, q.name).apply()

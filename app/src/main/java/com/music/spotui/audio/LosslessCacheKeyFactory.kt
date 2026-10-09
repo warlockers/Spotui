@@ -9,12 +9,11 @@ object LosslessCacheKeyFactory : CacheKeyFactory {
 
     fun buildCacheKey(spotifyTrackId: String?, url: String): String {
         val cleanId = spotifyTrackId?.removePrefix(SPOTIFY_PREFIX)?.substringBefore('|')?.trim()
-        if (!cleanId.isNullOrBlank()) {
-            return "spotui-flac:$cleanId"
-        }
-
         val uri = Uri.parse(url)
         val host = uri.host.orEmpty()
+        if (!cleanId.isNullOrBlank() && uri.scheme != "deezer" && !host.contains("googlevideo.com")) {
+            return "spotui-flac:$cleanId:${java.util.zip.CRC32().apply { update(host.toByteArray()) }.value}"
+        }
         val path = uri.path.orEmpty()
 
         if (host.contains("googlevideo.com") || host.contains("youtube.com")) {
@@ -22,7 +21,16 @@ object LosslessCacheKeyFactory : CacheKeyFactory {
                 ?: uri.getQueryParameter("id")
                 ?: uri.getQueryParameter("v")
             if (!videoId.isNullOrBlank()) {
-                return "spotui-yt:$videoId:$path"
+                val itag = uri.getQueryParameter("itag").orEmpty()
+                return "spotui-yt:$videoId:$itag:$path"
+            }
+        }
+
+        if (uri.scheme == "deezer") {
+            val trackId = uri.getQueryParameter("id").orEmpty()
+            val format = uri.getQueryParameter("fmt").orEmpty()
+            if (trackId.isNotBlank()) {
+                return "spotui-dz:$trackId:$format"
             }
         }
 

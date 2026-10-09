@@ -191,6 +191,7 @@ object QobuzAudioProvider {
         query: Query,
         preferHiRes: Boolean = true,
         resolverEndpoints: String? = null,
+        lossyOnly: Boolean = false,
     ): Resolved {
         val now = System.currentTimeMillis()
         val endpoints = kennyEndpoints(resolverEndpoints)
@@ -214,7 +215,7 @@ object QobuzAudioProvider {
             throw QobuzAudioResolutionException("Qobuz match not found for ${query.title}")
         }
 
-        val qualities = qualityCandidates(preferHiRes)
+        val qualities = if (lossyOnly) listOf(QobuzAudioQuality.MP3_320) else qualityCandidates(preferHiRes)
         val errors = mutableListOf<String>()
 
         for (track in tracks.take(MAX_STREAM_CANDIDATES)) {
