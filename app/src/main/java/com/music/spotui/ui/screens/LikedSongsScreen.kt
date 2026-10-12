@@ -447,6 +447,7 @@ fun LikedSongsScreen(navController: NavController) {
                         }
                     } else {
                         itemsIndexed(filteredSongs, key = { _, song -> song.id }) { index, song ->
+                            com.music.spotui.ui.components.SwipeToQueue(song) {
                             val currentColor = if (song.id == likedSongsViewModel.currentSongId.value)
                                 Color(AppPalette.toArgb()) else Color.White
 
@@ -518,6 +519,7 @@ fun LikedSongsScreen(navController: NavController) {
                                         )
                                     }
                                 }
+                            }
                             }
                         }
                     }

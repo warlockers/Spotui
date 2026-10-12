@@ -633,6 +633,7 @@ fun SumUpAlbumScreen(
                     }
                 } else {
                     repeat(filteredSongs.size) { songIdx ->
+                        com.music.spotui.ui.components.SwipeToQueue(filteredSongs[songIdx]) {
                         val targetSong = filteredSongs[songIdx]
 
                         var isLiked by remember(targetSong.id) {
@@ -752,6 +753,7 @@ fun SumUpAlbumScreen(
                                     contentDescription = ""
                                 )
                             }
+                        }
                         }
                     }
                 }

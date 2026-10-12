@@ -30,3 +30,12 @@ fun getLikedSongIds(context: Context): Set<Int> {
 fun getSongsByIds(songIds: Set<Int>, songs: List<SongsModel>): List<SongsModel> {
     return songs.filter { song -> song.id in songIds }
 }
+fun syncSpotifyLikedSongIds(context: Context, ids: Set<String>, complete: Boolean) {
+    val seed = context.getSharedPreferences("LikedSongsFromSpotify", Context.MODE_PRIVATE)
+    val previous = seed.getStringSet("ids", null).orEmpty()
+    context.getSharedPreferences("LikedSongs", Context.MODE_PRIVATE).edit().apply {
+        if (complete) (previous - ids).forEach { remove(it) }
+        ids.forEach { putString(it, it) }
+    }.apply()
+    if (complete) seed.edit().putStringSet("ids", ids).apply()
+}

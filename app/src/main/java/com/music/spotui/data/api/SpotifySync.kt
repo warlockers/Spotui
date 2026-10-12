@@ -71,8 +71,7 @@ object SpotifySync {
         scope.launch {
             if (!SpotifyTokenProvider.ensureToken(app)) { onDone(false); return@launch }
             val uri = "spotify:track:$trackId"
-            val refs = Spotify.playlistTracks(playlistId, limit = 100).getOrNull()
-                ?.items.orEmpty()
+            val refs = allPlaylistTracks(playlistId)
                 .filter { it.track?.id == trackId || it.track?.uri == uri }
                 .mapNotNull { pt -> pt.uid?.let { Spotify.PlaylistItemRef(uri = uri, uid = it) } }
             val ok = refs.isNotEmpty() &&
@@ -105,6 +104,9 @@ object SpotifySync {
         }
     }
 
+    private suspend fun allPlaylistTracks(playlistId: String) =
+        fetchAllPages { offset -> Spotify.playlistTracks(playlistId, limit = 100, offset = offset) }
+
     // ── Playlist membership (which playlists contain a track) ──
     // Cached per playlist for the app session so the "Saved in" sheet can show
     // check marks without re-fetching on every open.
@@ -114,8 +116,7 @@ object SpotifySync {
     suspend fun playlistTrackIds(context: Context, playlistId: String): Set<String> {
         membershipCache[playlistId]?.let { return it }
         if (!SpotifyTokenProvider.ensureToken(context.applicationContext)) return emptySet()
-        val ids = Spotify.playlistTracks(playlistId, limit = 100).getOrNull()
-            ?.items.orEmpty()
+        val ids = allPlaylistTracks(playlistId)
             .mapNotNull { it.track?.id?.ifBlank { null } }
             .toMutableSet()
         val set = ConcurrentHashMap.newKeySet<String>().apply { addAll(ids) }

@@ -372,6 +372,7 @@ fun DownloadsScreen(navController: NavController) {
                     )
                 } else {
                     repeat(displayedSongs.size) { index ->
+                        com.music.spotui.ui.components.SwipeToQueue(displayedSongs[index]) {
                         val song = displayedSongs[index]
                         val currentColor = if (song.id == playerViewModel.currentSongId.value)
                             Color(AppPalette.toArgb()) else Color.White
@@ -443,6 +444,7 @@ fun DownloadsScreen(navController: NavController) {
                                     )
                                 }
                             }
+                        }
                         }
                     }
                 }

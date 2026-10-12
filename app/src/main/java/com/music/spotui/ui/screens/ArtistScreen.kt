@@ -331,6 +331,7 @@ private fun ArtistOverviewContent(
                 )
             }
             itemsIndexed(tracks.take(5)) { index, item ->
+                com.music.spotui.ui.components.SwipeToQueue(item.song) {
                 PopularTrackRow(
                     item = item,
                     index = index,
@@ -338,6 +339,7 @@ private fun ArtistOverviewContent(
                     onPlay = { playTrackAt(index) },
                     onLongClick = { menuSong = item.song },
                 )
+                }
             }
         }
 

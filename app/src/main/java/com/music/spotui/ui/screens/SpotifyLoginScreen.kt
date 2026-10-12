@@ -60,9 +60,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.navigation.NavController
-import com.metrolist.spotify.Spotify
 import com.metrolist.spotify.SpotifyAuth
 import com.music.spotui.data.api.SpotifySession
+import com.music.spotui.data.api.SpotifyTokenProvider
 import com.music.spotui.ui.navigation.Routes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -157,6 +157,10 @@ fun SpotifyLoginScreen(navController: NavController) {
                         android.view.ViewGroup.LayoutParams.MATCH_PARENT,
                     )
                     webViewRef = this
+                    layoutParams = android.view.ViewGroup.LayoutParams(
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                        android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    )
                     cookieManager.setAcceptThirdPartyCookies(this, true)
 
                     setBackgroundColor(android.graphics.Color.BLACK)
@@ -551,24 +555,19 @@ private fun finishLogin(
 
     scope.launch(Dispatchers.IO) {
         SpotifySession.setSpDc(activity, spDc)
-        var lastError: Throwable? = null
         // The community TOTP/gist fetch is occasionally flaky — retry a couple times.
         repeat(3) { attempt ->
-            val result = SpotifyAuth.fetchAccessToken(spDc, spKey)
-            result.onSuccess { token ->
-                Spotify.accessToken = token.accessToken
+            if (SpotifyTokenProvider.ensureToken(activity, force = true)) {
                 withContext(Dispatchers.Main) { setStatus("Success!") }
                 delay(300)
                 withContext(Dispatchers.Main) { onSuccess() }
                 return@launch
-            }.onFailure { e ->
-                lastError = e
-                Timber.e(e, "Spotify token fetch failed (attempt ${attempt + 1})")
-                if (attempt < 2) delay(800)
             }
+            Timber.e("Spotify token fetch failed (attempt ${attempt + 1})")
+            if (attempt < 2) delay(800)
         }
         withContext(Dispatchers.Main) {
-            setStatus("Login failed: ${lastError?.message ?: "unknown error"}")
+            setStatus("Login failed. Check your connection and try again.")
             setError(true)
         }
         tokenFetchStarted.set(false)

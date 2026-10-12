@@ -57,10 +57,11 @@ class PlayerViewModel @Inject constructor(private val currentSongState: CurrentS
     }
 
     /** Append a track to the end of the queue ("Add to queue"). */
-    fun addToQueue(song: SongsModel) {
+    fun addToQueue(song: SongsModel): Boolean {
         val q = currentSongState.queue.value
-        if (q.any { it.id == song.id }) return
+        if (q.any { it.id == song.id }) return false
         currentSongState.updateQueue(q + song)
+        return true
     }
 
     /** Append multiple tracks to the end of the queue. */
@@ -209,6 +210,7 @@ class PlayerViewModel @Inject constructor(private val currentSongState: CurrentS
     @Volatile private var canvasRequestId: String = ""
 
     fun loadCanvas(trackId: String) {
+        if (trackId == canvasRequestId && _canvasUrl.value != null) return
         _canvasUrl.value = null
         canvasRequestId = trackId
         if (trackId.isBlank()) return

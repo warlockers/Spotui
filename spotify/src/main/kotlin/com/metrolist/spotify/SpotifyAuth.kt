@@ -65,7 +65,10 @@ object SpotifyAuth {
         spDc: String,
         spKey: String = "",
     ): Result<SpotifyInternalToken> = runCatching {
-        val nuance = fetchNuance()
+        val nuance = cachedNuance() ?: fetchNuance().also {
+            nuanceCache = it
+            nuanceFetchedAtMs = System.currentTimeMillis()
+        }
         val serverTimeSec = fetchServerTime()
         val totp = generateTotp(nuance.s, serverTimeSec)
 
@@ -99,7 +102,14 @@ object SpotifyAuth {
         }
 
         token
-    }
+    }.onFailure { nuanceCache = null }
+
+    private const val NUANCE_TTL_MS = 6 * 60 * 60 * 1000L
+    @Volatile private var nuanceCache: Nuance? = null
+    @Volatile private var nuanceFetchedAtMs = 0L
+
+    private fun cachedNuance(): Nuance? =
+        nuanceCache?.takeIf { System.currentTimeMillis() - nuanceFetchedAtMs < NUANCE_TTL_MS }
 
     private suspend fun fetchNuance(): Nuance = withContext(Dispatchers.IO) {
         val body = try {
@@ -136,7 +146,7 @@ object SpotifyAuth {
      * @param secret Base32-encoded shared secret
      * @param serverTimeSec Spotify server time in seconds since epoch
      */
-    private fun generateTotp(secret: String, serverTimeSec: Long): String {
+    internal fun generateTotp(secret: String, serverTimeSec: Long): String {
         val key = base32Decode(secret)
         val interval = 30L
         val timeStep = floor(serverTimeSec.toDouble() / interval).toLong()
@@ -162,7 +172,7 @@ object SpotifyAuth {
         return otp.toString().padStart(6, '0')
     }
 
-    private fun base32Decode(input: String): ByteArray {
+    internal fun base32Decode(input: String): ByteArray {
         val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
         val cleaned = input.uppercase().replace("=", "")
 

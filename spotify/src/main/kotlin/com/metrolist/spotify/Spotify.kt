@@ -262,7 +262,7 @@ object Spotify {
             }
             if (response.status == HttpStatusCode.TooManyRequests) {
                 val retryAfter = response.headers["Retry-After"]?.toLongOrNull() ?: (2L * (attempt + 1))
-                if (attempt < maxRetries - 1) {
+                if (retryAfter <= 3L && attempt < maxRetries - 1) {
                     log("W", "GQL $operationName -> 429, waiting ${retryAfter}s (attempt ${attempt + 1}/$maxRetries)")
                     delay(retryAfter * 1000)
                     continue
@@ -494,6 +494,7 @@ object Spotify {
             val lyricsObj =
                 root.obj("lyrics") ?: throw SpotifyException(500, "Invalid color-lyrics response")
             val synced = lyricsObj.str("syncType") == "LINE_SYNCED"
+            val language = lyricsObj.str("language")?.takeIf { it.isNotBlank() }
             val lines =
                 lyricsObj.arr("lines")?.mapNotNull { el ->
                     val o = el.jsonObject
@@ -505,7 +506,11 @@ object Spotify {
                 }.orEmpty()
             if (lines.isEmpty()) throw SpotifyException(404, "Empty lyrics for $trackId")
             log("D", "lyrics($trackId) OK — ${lines.size} lines, synced=$synced")
-            com.metrolist.spotify.models.SpotifyLyrics(synced = synced, lines = lines)
+            com.metrolist.spotify.models.SpotifyLyrics(
+                synced = synced,
+                lines = lines,
+                language = language,
+            )
         }
 
     // ── Playlists (GQL: libraryV3) ──────────────────────────────────────
@@ -1661,7 +1666,7 @@ object Spotify {
             "PlaylistResponseWrapper" -> parseHomePlaylist(data)
             "AlbumResponseWrapper" -> parseHomeAlbum(data)
             "ArtistResponseWrapper" -> parseHomeArtist(data)
-            else -> null
+            else -> null.also { log("D", "spotifyHome: skipped item type $wrapper") }
         }
     }
 

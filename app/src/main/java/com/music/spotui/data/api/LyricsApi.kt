@@ -139,6 +139,7 @@ object LyricsApi {
                 Lyrics(
                     lines = sp.lines.map { LyricLine(it.startMs, it.words) },
                     synced = sp.synced,
+                    language = sp.language,
                 )
             },
             onFailure = {
@@ -161,38 +162,40 @@ object LyricsApi {
     }
 
     private fun search(title: String, artist: String, durationSec: Int): Lyrics? =
-        searchUrl("$BASE/search?track_name=${enc(title)}&artist_name=${enc(artist)}", null, durationSec)
+        searchUrl("$BASE/search?track_name=${enc(title)}&artist_name=${enc(artist)}", title, artist, durationSec)
 
     /**
-     * Title-only search for when the artist is spelled differently on LRCLIB
-     * (transliterations, "feat." in the artist field, …). Candidates whose artist
-     * loosely matches ours are strongly preferred so we don't sync a cover.
      */
     private fun searchTitleOnly(title: String, artist: String, durationSec: Int): Lyrics? =
-        searchUrl("$BASE/search?track_name=${enc(title)}", artist, durationSec)
+        searchUrl("$BASE/search?track_name=${enc(title)}", title, artist, durationSec)
 
-    private fun searchUrl(url: String, preferArtist: String?, durationSec: Int): Lyrics? {
+    private fun searchUrl(url: String, title: String, artist: String, durationSec: Int): Lyrics? {
         val body = httpGet(url) ?: return null
         val arr = runCatching { JSONArray(body) }.getOrNull() ?: return null
-        if (arr.length() == 0) return null
-        // Prefer the candidate whose duration is closest, that has synced lyrics,
-        // and (for title-only searches) whose artist loosely matches ours.
         var best: JSONObject? = null
         var bestScore = Long.MAX_VALUE
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
-            val hasSynced = !o.optString("syncedLyrics").isNullOrBlank()
             val dur = o.optInt("duration", 0)
+            if (!isPlausibleMatch(o.optString("trackName"), o.optString("artistName"), dur, title, artist, durationSec)) continue
+            val hasSynced = !o.optString("syncedLyrics").isNullOrBlank()
             val diff = if (durationSec > 0 && dur > 0) kotlin.math.abs(dur - durationSec).toLong() else 0L
-            val artistMismatch = if (preferArtist != null) {
-                val candidate = o.optString("artistName").lowercase()
-                val ours = preferArtist.lowercase()
-                if (candidate.contains(ours) || ours.contains(candidate)) 0 else 500_000
-            } else 0
-            val score = diff + (if (hasSynced) 0 else 100_000) + artistMismatch
+            val score = diff + (if (hasSynced) 0 else 100_000)
             if (score < bestScore) { bestScore = score; best = o }
         }
         return best?.let { runCatching { parse(it) }.getOrNull() }
+    }
+
+    private fun matchKey(s: String) = s.lowercase().filter { it.isLetterOrDigit() }
+
+    internal fun isPlausibleMatch(
+        candTitle: String, candArtist: String, candDurationSec: Int,
+        title: String, artist: String, durationSec: Int,
+    ): Boolean {
+        fun overlaps(a: String, b: String) = a.isNotEmpty() && b.isNotEmpty() && (a.contains(b) || b.contains(a))
+        if (!overlaps(matchKey(candArtist), matchKey(artist))) return false
+        if (!overlaps(matchKey(cleanTitle(candTitle)), matchKey(title))) return false
+        return durationSec <= 0 || candDurationSec <= 0 || kotlin.math.abs(candDurationSec - durationSec) <= 10
     }
 
     private fun parse(o: JSONObject): Lyrics? {
