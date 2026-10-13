@@ -522,20 +522,31 @@ object SongPlayer {
             player?.pause()
         }
 
-        val embedQuality = com.music.spotui.data.preferences.currentStreamingQuality(appContext)
         val expectedDurationMs = (boundState?.queue?.value?.firstOrNull { it.url == song }?.durationMs ?: 0).toLong()
-        if (song.startsWith("episode:") && spotifyEmbedEnabled(appContext) && SpotifyWebPlayer.isAvailable(appContext)) {
-            startEmbedPlayback(song, appContext, song.removePrefix("episode:"), true, 0L)
-            return
-        }
-
-        val downloadedPath = com.music.spotui.data.preferences.downloadedPathForQuery(appContext, song)
-        if (downloadedPath == null && spotifyFirst(appContext) && spotifyEmbedAllowed(appContext, embedQuality)) {
-            val spotifyId = trackIdRegistry[song] ?: spotifyTrackIdForPlayback(song)
-            if (spotifyId != null) {
-                startEmbedPlayback(song, appContext, spotifyId, false, expectedDurationMs)
+        spotifyRouteNote = null
+        if (song.startsWith("episode:")) {
+            val reason = spotifyUnavailableReason(appContext)
+            if (reason == null) {
+                startEmbedPlayback(song, appContext, song.removePrefix("episode:"), true, 0L)
                 return
             }
+            spotifyRouteNote = "Spotify: skipped ($reason)"
+        } else if (spotifyEmbedEnabled(appContext)) {
+            val downloadedPath = com.music.spotui.data.preferences.downloadedPathForQuery(appContext, song)
+            var skipReason: String? = when {
+                downloadedPath != null -> "downloaded file exists"
+                !spotifyFirst(appContext) -> "not first in provider order, tried only if other sources fail"
+                else -> spotifyUnavailableReason(appContext)
+            }
+            if (skipReason == null) {
+                val spotifyId = trackIdRegistry[song] ?: spotifyTrackIdForPlayback(song)
+                if (spotifyId != null) {
+                    startEmbedPlayback(song, appContext, spotifyId, false, expectedDurationMs)
+                    return
+                }
+                skipReason = "no Spotify track id for this song"
+            }
+            spotifyRouteNote = "Spotify: skipped ($skipReason)"
         }
         if (embedActive) {
             SpotifyWebPlayer.pause()
@@ -547,9 +558,9 @@ object SongPlayer {
                 val streamUrl = resolveStreamUrl(song, appContext, forPlayback = true) ?: run {
                     releaseWakeLock("spotui:playSong")
                     val fallbackSpotifyId = trackIdRegistry[song] ?: spotifyTrackIdForPlayback(song)
-                    if (currentRequest == song && fallbackSpotifyId != null && spotifyEmbedAllowed(appContext, embedQuality)) {
+                    if (currentRequest == song && fallbackSpotifyId != null && spotifyEmbedAvailable(appContext)) {
                         withContext(Dispatchers.Main) {
-                            startEmbedPlayback(song, appContext, fallbackSpotifyId, false, expectedDurationMs)
+                            startEmbedPlayback(song, appContext, fallbackSpotifyId, false, expectedDurationMs, clearLog = false)
                         }
                         return@launch
                     }
@@ -941,6 +952,10 @@ object SongPlayer {
         if (forPlayback) {
             resolutionLogs.clear()
             logResolution("Resolving stream for '$cleanTitle' by '$songArtist'")
+            spotifyRouteNote?.let {
+                logResolution(it)
+                spotifyRouteNote = null
+            }
             boundState?.updateResolveError(null)
             updateResolveStatus(true, "Checking cache...")
         }
@@ -2348,12 +2363,16 @@ object SongPlayer {
 
     private fun setEmbedActive(active: Boolean) {
         embedActive = active
-        SpotifyWebPlayer.notifyStateChanged()
     }
 
-    private const val EMBED_START_TIMEOUT_MS = 10_000L
+    private const val EMBED_START_TIMEOUT_MS = 20_000L
+    private const val EMBED_PREVIEW_MAX_MS = 35_000L
     private const val EMBED_PREVIEW_BLOCK_MINUTES = 30L
     private const val EMBED_TIMEOUT_BLOCK_MINUTES = 5L
+
+    @Volatile private var embedBlockedUntilMs = 0L
+    @Volatile private var spotifyRouteNote: String? = null
+    @Volatile var onEmbedTrackEnded: (() -> Unit)? = null
 
     private fun spotifyEmbedEnabled(appContext: Context): Boolean =
         com.music.spotui.data.preferences.isAudioProviderEnabled(
@@ -2366,14 +2385,28 @@ object SongPlayer {
             .firstOrNull { com.music.spotui.data.preferences.isAudioProviderEnabled(appContext, it.id) } ==
             com.music.spotui.data.preferences.AudioProviderOrderItem.SPOTIFY
 
-    private fun spotifyEmbedAllowed(
-        appContext: Context,
-        quality: com.music.spotui.data.preferences.StreamQuality,
-    ): Boolean =
-        spotifyEmbedEnabled(appContext) &&
-            !quality.lossless &&
-            quality != com.music.spotui.data.preferences.StreamQuality.LOW &&
-            SpotifyWebPlayer.isAvailable(appContext)
+    private fun spotifyUnavailableReason(appContext: Context): String? = when {
+        !spotifyEmbedEnabled(appContext) -> "disabled in provider settings"
+        com.music.spotui.data.api.SpotifySession.spDc(appContext).isBlank() -> "not logged in to Spotify"
+        System.currentTimeMillis() < embedBlockedUntilMs -> "temporarily disabled after a failed attempt"
+        !SpotifyWebPlayer.canPlay -> "web player not ready (Widevine check pending or unavailable)"
+        else -> null
+    }
+
+    private fun spotifyEmbedAvailable(appContext: Context): Boolean = spotifyUnavailableReason(appContext) == null
+
+    private fun embedStarted(expectedDurationMs: Long): Boolean {
+        val duration = SpotifyWebPlayer.durationMs
+        if (!SpotifyWebPlayer.isPlaying || duration <= 0 || SpotifyWebPlayer.positionMs <= 0) return false
+        return expectedDurationMs <= 0 ||
+            kotlin.math.abs(duration - expectedDurationMs) <= 5_000L ||
+            duration <= EMBED_PREVIEW_MAX_MS
+    }
+
+    private fun embedPreviewOnly(expectedDurationMs: Long): Boolean {
+        val duration = SpotifyWebPlayer.durationMs
+        return duration in 1..EMBED_PREVIEW_MAX_MS && expectedDurationMs > 60_000L
+    }
 
     private fun startEmbedPlayback(
         song: String,
@@ -2381,7 +2414,10 @@ object SongPlayer {
         spotifyId: String,
         episode: Boolean,
         expectedDurationMs: Long,
+        clearLog: Boolean = true,
     ) {
+        if (clearLog) resolutionLogs.clear()
+        logResolution("Spotify: playing ${if (episode) "episode" else "track"} $spotifyId via web player")
         runCatching { player?.pause() }
         setEmbedActive(true)
         currentSource = "Spotify"
@@ -2390,21 +2426,42 @@ object SongPlayer {
         if (episode) SpotifyWebPlayer.playEpisode(spotifyId) else SpotifyWebPlayer.play(spotifyId)
         scope.launch {
             val deadline = System.currentTimeMillis() + EMBED_START_TIMEOUT_MS
-            while (currentRequest == song && !SpotifyWebPlayer.hasStarted && System.currentTimeMillis() < deadline) {
+            while (currentRequest == song && !embedStarted(expectedDurationMs) && System.currentTimeMillis() < deadline) {
                 delay(250)
             }
             if (currentRequest != song) return@launch
-            val started = SpotifyWebPlayer.hasStarted
-            val previewOnly = started && !episode && SpotifyWebPlayer.isPreviewOnly(expectedDurationMs)
-            if (started && !previewOnly) {
-                updateResolveStatus(false)
+            val started = embedStarted(expectedDurationMs)
+            val previewOnly = started && !episode && embedPreviewOnly(expectedDurationMs)
+            if (!started || previewOnly) {
+                val failure = if (previewOnly) {
+                    "only a 30 s preview is available (full tracks need a logged-in account)"
+                } else {
+                    "playback did not start within ${EMBED_START_TIMEOUT_MS / 1000} s"
+                }
+                logResolution("Spotify: $failure, falling back")
+                spotifyRouteNote = "Spotify: $failure, falling back"
+                val minutes = if (previewOnly) EMBED_PREVIEW_BLOCK_MINUTES else EMBED_TIMEOUT_BLOCK_MINUTES
+                embedBlockedUntilMs = System.currentTimeMillis() + minutes * 60_000L
+                SpotifyWebPlayer.pause()
+                withContext(Dispatchers.Main) {
+                    setEmbedActive(false)
+                    if (currentRequest == song) playSong(song, appContext)
+                }
                 return@launch
             }
-            SpotifyWebPlayer.markUnavailable(if (previewOnly) EMBED_PREVIEW_BLOCK_MINUTES else EMBED_TIMEOUT_BLOCK_MINUTES)
-            SpotifyWebPlayer.pause()
-            withContext(Dispatchers.Main) {
-                setEmbedActive(false)
-                if (currentRequest == song) playSong(song, appContext)
+            updateResolveStatus(false)
+            logResolution("Spotify: playback started (${SpotifyWebPlayer.durationMs / 1000} s)")
+            var lastPosition = 0L
+            while (currentRequest == song && embedActive) {
+                delay(500)
+                val duration = SpotifyWebPlayer.durationMs
+                val position = SpotifyWebPlayer.positionMs
+                val nearEnd = duration > 0 && (position >= duration - 1_500L || (lastPosition >= duration - 3_000L && position < 1_500L))
+                if (nearEnd && !SpotifyWebPlayer.isPlaying) {
+                    withContext(Dispatchers.Main) { onEmbedTrackEnded?.invoke() }
+                    break
+                }
+                lastPosition = position
             }
         }
     }
@@ -2459,7 +2516,7 @@ object SongPlayer {
         cancelCrossfade()
         releaseWakeLock("spotui:stop")
         if (embedActive) {
-            SpotifyWebPlayer.stop()
+            SpotifyWebPlayer.pause()
             setEmbedActive(false)
         }
         player?.stop()

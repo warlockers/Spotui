@@ -262,7 +262,7 @@ class PlaybackService : MediaLibraryService() {
 
         // As the hidden web player streams, keep the notification in sync and swap
         // the session between the web player (during web playback) and the ExoPlayer.
-        SpotifyWebPlayer.onTrackEnded = {
+        SongPlayer.onEmbedTrackEnded = {
             if (SongPlayer.webPlaybackActive()) handleTrackEnded()
         }
         SpotifyWebPlayer.onStateChanged = {
@@ -847,7 +847,7 @@ class PlaybackService : MediaLibraryService() {
         SongPlayer.exoPlayer?.removeListener(playerListener)
         SongPlayer.onPlayerSwapped = null
         SpotifyWebPlayer.onStateChanged = null
-        SpotifyWebPlayer.onTrackEnded = null
+        SongPlayer.onEmbedTrackEnded = null
         webPlayer?.release()
         webPlayer = null
         searchCache.clear()
