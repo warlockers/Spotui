@@ -89,51 +89,7 @@ class PlaybackService : MediaLibraryService() {
                     // The crossfade routine itself handles the transition and promotes the new player.
                     return
                 }
-                SongPlayer.acquireWakeLock(applicationContext, "spotui:advance", 60_000L)
-                when (currentSongState.repeat.value) {
-                    RepeatMode.ONE -> {
-                        val p = SongPlayer.exoPlayer
-                        if (p != null) {
-                            p.seekTo(0)
-                            p.play()
-                        } else {
-                            val queue = currentSongState.queue.value
-                            if (queue.isNotEmpty()) {
-                                val curId = currentSongState.songId.value
-                                val cur = queue.indexOfFirst { it.id == curId }
-                                    .takeIf { it >= 0 }
-                                    ?: queue.indexOfFirst { it.url == currentSongState.songUrl.value }.takeIf { it >= 0 }
-                                    ?: currentSongState.songIndex.value.coerceIn(0, queue.size - 1)
-                                val song = queue[cur]
-                                SongPlayer.playSong(song.url, applicationContext, "song/${song.id}")
-                            } else {
-                                SongPlayer.releaseWakeLock("spotui:advance")
-                            }
-                        }
-                    }
-
-                    RepeatMode.ALL -> {
-                        advance(forward = true)
-                    }
-
-                    RepeatMode.OFF -> {
-                        val queue = currentSongState.queue.value
-                        if (queue.isNotEmpty()) {
-                            val curId = currentSongState.songId.value
-                            val cur = queue.indexOfFirst { it.id == curId }
-                                .takeIf { it >= 0 }
-                                ?: queue.indexOfFirst { it.url == currentSongState.songUrl.value }.takeIf { it >= 0 }
-                                ?: currentSongState.songIndex.value.coerceIn(0, queue.size - 1)
-                            if (cur < queue.size - 1) {
-                                advance(forward = true)
-                            } else {
-                                SongPlayer.releaseWakeLock("spotui:advance")
-                            }
-                        } else {
-                            SongPlayer.releaseWakeLock("spotui:advance")
-                        }
-                    }
-                }
+                handleTrackEnded()
             }
         }
 
@@ -162,6 +118,54 @@ class PlaybackService : MediaLibraryService() {
                 SongPlayer.invalidateResolvedStream(queue[cur].url)
             }
             advance(forward = true)
+        }
+    }
+
+    private fun handleTrackEnded() {
+        SongPlayer.acquireWakeLock(applicationContext, "spotui:advance", 60_000L)
+        when (currentSongState.repeat.value) {
+            RepeatMode.ONE -> {
+                val p = SongPlayer.exoPlayer
+                if (p != null && !SongPlayer.webPlaybackActive()) {
+                    p.seekTo(0)
+                    p.play()
+                } else {
+                    val queue = currentSongState.queue.value
+                    if (queue.isNotEmpty()) {
+                        val curId = currentSongState.songId.value
+                        val cur = queue.indexOfFirst { it.id == curId }
+                            .takeIf { it >= 0 }
+                            ?: queue.indexOfFirst { it.url == currentSongState.songUrl.value }.takeIf { it >= 0 }
+                            ?: currentSongState.songIndex.value.coerceIn(0, queue.size - 1)
+                        val song = queue[cur]
+                        SongPlayer.playSong(song.url, applicationContext, "song/${song.id}")
+                    } else {
+                        SongPlayer.releaseWakeLock("spotui:advance")
+                    }
+                }
+            }
+
+            RepeatMode.ALL -> {
+                advance(forward = true)
+            }
+
+            RepeatMode.OFF -> {
+                val queue = currentSongState.queue.value
+                if (queue.isNotEmpty()) {
+                    val curId = currentSongState.songId.value
+                    val cur = queue.indexOfFirst { it.id == curId }
+                        .takeIf { it >= 0 }
+                        ?: queue.indexOfFirst { it.url == currentSongState.songUrl.value }.takeIf { it >= 0 }
+                        ?: currentSongState.songIndex.value.coerceIn(0, queue.size - 1)
+                    if (cur < queue.size - 1) {
+                        advance(forward = true)
+                    } else {
+                        SongPlayer.releaseWakeLock("spotui:advance")
+                    }
+                } else {
+                    SongPlayer.releaseWakeLock("spotui:advance")
+                }
+            }
         }
     }
 
@@ -258,6 +262,9 @@ class PlaybackService : MediaLibraryService() {
 
         // As the hidden web player streams, keep the notification in sync and swap
         // the session between the web player (during web playback) and the ExoPlayer.
+        SpotifyWebPlayer.onTrackEnded = {
+            if (SongPlayer.webPlaybackActive()) handleTrackEnded()
+        }
         SpotifyWebPlayer.onStateChanged = {
             syncSessionPlayer()
             if (showingWeb) {
@@ -840,6 +847,7 @@ class PlaybackService : MediaLibraryService() {
         SongPlayer.exoPlayer?.removeListener(playerListener)
         SongPlayer.onPlayerSwapped = null
         SpotifyWebPlayer.onStateChanged = null
+        SpotifyWebPlayer.onTrackEnded = null
         webPlayer?.release()
         webPlayer = null
         searchCache.clear()

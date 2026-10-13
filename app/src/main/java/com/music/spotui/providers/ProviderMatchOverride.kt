@@ -17,6 +17,7 @@ data class ProviderMatchOverride(
             AudioProviderOrderItem.QOBUZ -> "qobuz:track:$providerTrackId"
             AudioProviderOrderItem.YOUTUBE_MUSIC -> providerTrackId
             AudioProviderOrderItem.SPOTIFLAC -> providerTrackId
+            AudioProviderOrderItem.SPOTIFY -> providerTrackId
         }
 }
 

@@ -196,7 +196,7 @@ object SongPlayer {
     // YouTube is the last-resort fallback, kept on so tracks SpotiFLAC misses or
     // can't serve during a proxy cooldown still play — with the wrong-song guards
     // (videoId match check + artist/title scoring + candidate fallback).
-    @Volatile var webPlayerEnabled = false
+    @Volatile private var embedActive = false
     @Volatile var youtubeEnabled = true
     @Volatile var deezerEnabled = true
 
@@ -522,49 +522,37 @@ object SongPlayer {
             player?.pause()
         }
 
-        // Podcast episodes are encoded as "episode:<id>" queries — play them via the
-        // Spotify web player's episode page (same engine as tracks).
-        if (song.startsWith("episode:") && webPlayerEnabled && SpotifyWebPlayer.canPlay &&
-            com.music.spotui.data.preferences.isWebPlaybackEnabled(appContext)
-        ) {
-            runCatching { player?.pause() }
-            currentSource = "Spotify"
-            currentQuality = ""
-            SpotifyWebPlayer.playEpisode(song.removePrefix("episode:"))
+        val embedQuality = com.music.spotui.data.preferences.currentStreamingQuality(appContext)
+        val expectedDurationMs = (boundState?.queue?.value?.firstOrNull { it.url == song }?.durationMs ?: 0).toLong()
+        if (song.startsWith("episode:") && spotifyEmbedEnabled(appContext) && SpotifyWebPlayer.isAvailable(appContext)) {
+            startEmbedPlayback(song, appContext, song.removePrefix("episode:"), true, 0L)
             return
         }
 
-        // Downloaded tracks ALWAYS play the local file — even with Spotify web
-        // playback on. (Web is now the default and used to run first, so a
-        // downloaded track streamed from Spotify instead of playing offline.)
         val downloadedPath = com.music.spotui.data.preferences.downloadedPathForQuery(appContext, song)
-        if (downloadedPath == null && webPlayerEnabled &&
-            // Experimental: stream through Spotify's own web player (real Spotify audio,
-            // no bypass) when enabled AND the device WebView has Widevine. Otherwise
-            // fall through to the normal YouTube/FLAC engine so playback is never silent.
-            com.music.spotui.data.preferences.isWebPlaybackEnabled(appContext) &&
-            SpotifyWebPlayer.canPlay
-        ) {
+        if (downloadedPath == null && spotifyFirst(appContext) && spotifyEmbedAllowed(appContext, embedQuality)) {
             val spotifyId = trackIdRegistry[song] ?: spotifyTrackIdForPlayback(song)
             if (spotifyId != null) {
-                runCatching { player?.pause() }
-                currentSource = "Spotify"
-                currentQuality = ""
-                updateResolveStatus(true, "Loading Spotify track...")
-                SpotifyWebPlayer.play(spotifyId)
-                scope.launch {
-                    delay(1500)
-                    updateResolveStatus(false)
-                }
+                startEmbedPlayback(song, appContext, spotifyId, false, expectedDurationMs)
                 return
             }
-            Log.w(TAG, "web playback on but no Spotify id for query: $song — using fallback engine")
+        }
+        if (embedActive) {
+            SpotifyWebPlayer.pause()
+            setEmbedActive(false)
         }
         acquireWakeLock(appContext, "spotui:playSong", 60_000L)
         scope.launch {
             try {
                 val streamUrl = resolveStreamUrl(song, appContext, forPlayback = true) ?: run {
                     releaseWakeLock("spotui:playSong")
+                    val fallbackSpotifyId = trackIdRegistry[song] ?: spotifyTrackIdForPlayback(song)
+                    if (currentRequest == song && fallbackSpotifyId != null && spotifyEmbedAllowed(appContext, embedQuality)) {
+                        withContext(Dispatchers.Main) {
+                            startEmbedPlayback(song, appContext, fallbackSpotifyId, false, expectedDurationMs)
+                        }
+                        return@launch
+                    }
                     // Tell the user instead of silently leaving the request on.
                     val existingError = boundState?.resolveError?.value
                     if (currentRequest == song && existingError.isNullOrBlank()) {
@@ -872,6 +860,7 @@ object SongPlayer {
             com.music.spotui.data.preferences.AudioProviderOrderItem.TIDAL -> quality.accepts(320)
             com.music.spotui.data.preferences.AudioProviderOrderItem.AMAZON,
             com.music.spotui.data.preferences.AudioProviderOrderItem.SPOTIFLAC,
+            com.music.spotui.data.preferences.AudioProviderOrderItem.SPOTIFY,
             com.music.spotui.data.preferences.AudioProviderOrderItem.YOUTUBE_MUSIC -> false
         }
     }
@@ -1375,6 +1364,7 @@ object SongPlayer {
                                 if (forPlayback) logResolution("✗ SoundCloud: ${err.javaClass.simpleName}: ${err.message?.take(200)}")
                             }
                         }
+                        com.music.spotui.data.preferences.AudioProviderOrderItem.SPOTIFY,
                         com.music.spotui.data.preferences.AudioProviderOrderItem.YOUTUBE_MUSIC -> Unit
                     }
                 }
@@ -2354,15 +2344,69 @@ object SongPlayer {
         return player?.isPlaying ?: false
     }
 
-    fun webPlaybackActive(): Boolean {
-        if (!webPlayerEnabled) return false
-        val ctx = appCtx ?: return false
-        // Spotify web playback needs: user hasn't opted out, the WebView actually has
-        // Widevine, AND the user is logged into Spotify (sp_dc). Missing any of these
-        // → fall back to the YouTube/FLAC engine so playback is never silent.
-        return com.music.spotui.data.preferences.isWebPlaybackEnabled(ctx) &&
-            SpotifyWebPlayer.canPlay &&
-            com.music.spotui.data.api.SpotifySession.spDc(ctx).isNotBlank()
+    fun webPlaybackActive(): Boolean = embedActive
+
+    private fun setEmbedActive(active: Boolean) {
+        embedActive = active
+        SpotifyWebPlayer.notifyStateChanged()
+    }
+
+    private const val EMBED_START_TIMEOUT_MS = 10_000L
+    private const val EMBED_PREVIEW_BLOCK_MINUTES = 30L
+    private const val EMBED_TIMEOUT_BLOCK_MINUTES = 5L
+
+    private fun spotifyEmbedEnabled(appContext: Context): Boolean =
+        com.music.spotui.data.preferences.isAudioProviderEnabled(
+            appContext,
+            com.music.spotui.data.preferences.AudioProviderOrderItem.SPOTIFY.id,
+        )
+
+    private fun spotifyFirst(appContext: Context): Boolean =
+        com.music.spotui.data.preferences.getAudioProviderOrder(appContext)
+            .firstOrNull { com.music.spotui.data.preferences.isAudioProviderEnabled(appContext, it.id) } ==
+            com.music.spotui.data.preferences.AudioProviderOrderItem.SPOTIFY
+
+    private fun spotifyEmbedAllowed(
+        appContext: Context,
+        quality: com.music.spotui.data.preferences.StreamQuality,
+    ): Boolean =
+        spotifyEmbedEnabled(appContext) &&
+            !quality.lossless &&
+            quality != com.music.spotui.data.preferences.StreamQuality.LOW &&
+            SpotifyWebPlayer.isAvailable(appContext)
+
+    private fun startEmbedPlayback(
+        song: String,
+        appContext: Context,
+        spotifyId: String,
+        episode: Boolean,
+        expectedDurationMs: Long,
+    ) {
+        runCatching { player?.pause() }
+        setEmbedActive(true)
+        currentSource = "Spotify"
+        currentQuality = ""
+        updateResolveStatus(true, "Loading Spotify track...")
+        if (episode) SpotifyWebPlayer.playEpisode(spotifyId) else SpotifyWebPlayer.play(spotifyId)
+        scope.launch {
+            val deadline = System.currentTimeMillis() + EMBED_START_TIMEOUT_MS
+            while (currentRequest == song && !SpotifyWebPlayer.hasStarted && System.currentTimeMillis() < deadline) {
+                delay(250)
+            }
+            if (currentRequest != song) return@launch
+            val started = SpotifyWebPlayer.hasStarted
+            val previewOnly = started && !episode && SpotifyWebPlayer.isPreviewOnly(expectedDurationMs)
+            if (started && !previewOnly) {
+                updateResolveStatus(false)
+                return@launch
+            }
+            SpotifyWebPlayer.markUnavailable(if (previewOnly) EMBED_PREVIEW_BLOCK_MINUTES else EMBED_TIMEOUT_BLOCK_MINUTES)
+            SpotifyWebPlayer.pause()
+            withContext(Dispatchers.Main) {
+                setEmbedActive(false)
+                if (currentRequest == song) playSong(song, appContext)
+            }
+        }
     }
 
     // ── Session restore (survive app restarts) ──
@@ -2414,6 +2458,10 @@ object SongPlayer {
     fun stop() {
         cancelCrossfade()
         releaseWakeLock("spotui:stop")
+        if (embedActive) {
+            SpotifyWebPlayer.stop()
+            setEmbedActive(false)
+        }
         player?.stop()
         loadedQuery = null
         currentRequest = ""

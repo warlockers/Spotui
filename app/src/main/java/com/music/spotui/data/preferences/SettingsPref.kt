@@ -146,6 +146,7 @@ fun currentStreamingQuality(c: Context): StreamQuality {
 
 
 enum class AudioProviderOrderItem(val id: String, val displayName: String) {
+    SPOTIFY("spotify", "Spotify"),
     AMAZON("amazon", "Amazon Music"),
     QOBUZ("qobuz", "Qobuz"),
     TIDAL("tidal", "TIDAL"),
@@ -159,6 +160,7 @@ private const val KEY_AUDIO_PROVIDER_ORDER = "audio_provider_order"
 
 fun getAudioProviderOrder(c: Context): List<AudioProviderOrderItem> {
     val defaultList = listOf(
+        AudioProviderOrderItem.SPOTIFY,
         AudioProviderOrderItem.DEEZER,
         AudioProviderOrderItem.SPOTIFLAC,
         AudioProviderOrderItem.AMAZON,
@@ -179,7 +181,7 @@ fun getAudioProviderOrder(c: Context): List<AudioProviderOrderItem> {
 
     val missing = AudioProviderOrderItem.values().filter { it !in parsed }
     return if (missing.isNotEmpty()) {
-        val complete = (parsed + missing).distinct()
+        val complete = (missing.filter { it == AudioProviderOrderItem.SPOTIFY } + parsed + missing.filter { it != AudioProviderOrderItem.SPOTIFY }).distinct()
         setAudioProviderOrder(c, complete)
         complete
     } else {
