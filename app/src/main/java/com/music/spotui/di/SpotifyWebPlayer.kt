@@ -691,6 +691,28 @@ object SpotifyWebPlayer {
           return { pp: pp, label: label, session: session, media: active, count: media.length,
                    playing: session === 'playing' || !!active || (byLabel && !!now && durOk) };
         }
+        function spotuiDismissDialog(){
+          var d = document.querySelector('[role="dialog"]');
+          if (!d) return null;
+          var close = d.querySelector('[data-testid="close-button"],[data-testid="modal-close"],button[aria-label*="lose" i],button[aria-label*="avřít" i],button[aria-label*="chlie" i],button[aria-label*="errar" i],button[aria-label*="ermer" i],button[aria-label*="hiudi" i]');
+          if (close) { close.click(); return 'dialog-closed'; }
+          var lang = (document.documentElement.lang || navigator.language || 'en').split('-')[0];
+          var names = [];
+          try { names.push(new Intl.DisplayNames([lang], { type: 'language' }).of(lang)); } catch (e) {}
+          names.push('English');
+          var items = [].slice.call(d.querySelectorAll('button,[role="button"],li,a'));
+          for (var n = 0; n < names.length; n++) {
+            var nm = (names[n] || '').toLowerCase();
+            if (!nm) continue;
+            for (var i = 0; i < items.length; i++) {
+              var t = (items[i].textContent || '').toLowerCase();
+              if (t.indexOf(nm) > -1 && t.length < nm.length * 3) { items[i].click(); return 'dialog-language:' + nm; }
+            }
+          }
+          var ev = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true });
+          document.dispatchEvent(ev);
+          return 'dialog-escape';
+        }
     """.trimIndent()
 
     private fun clickPlayJs() =
@@ -699,6 +721,8 @@ object SpotifyWebPlayer {
           $PLAYER_STATE_JS
           var st = spotuiState();
           if (st.playing) return 'already-playing';
+          var dismissed = spotuiDismissDialog();
+          if (dismissed) return dismissed;
           var b = document.querySelector('[data-testid="play-button"]');
           if (b) { b.click(); return 'clicked'; }
           if (st.pp) { st.pp.click(); return 'clicked-transport'; }
