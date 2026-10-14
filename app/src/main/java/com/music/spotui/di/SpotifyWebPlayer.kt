@@ -32,6 +32,7 @@ import androidx.webkit.WebViewFeature
 object SpotifyWebPlayer {
     private const val TAG = "SpotifyWebPlayer"
     private const val FALLBACK_CHROME_VERSION = "131.0.0.0"
+    private val ENGLISH_HEADERS = mapOf("Accept-Language" to "en-US,en;q=0.9")
     private const val SPOTIFY_ORIGIN = "https://open.spotify.com"
     private const val MAX_AD_IDS = 32
     @Volatile private var activityRef: java.lang.ref.WeakReference<Activity>? = null
@@ -171,6 +172,7 @@ object SpotifyWebPlayer {
                     // Visibility API to always report visible+focused.
                     if (!docStartInstalled) {
                         view?.evaluateJavascript(VISIBILITY_SPOOF_JS, null)
+                        view?.evaluateJavascript(LOCALE_SPOOF_JS, null)
                         view?.evaluateJavascript(MEDIA_TRACK_JS, null)
                         view?.evaluateJavascript(AD_STATE_HOOK_JS, null)
                     }
@@ -250,7 +252,7 @@ object SpotifyWebPlayer {
             )
             activity.addContentView(wv, params)
             wv.post { wv.translationX = wv.width.toFloat() + 2000f }
-            wv.loadUrl("https://open.spotify.com/")
+            wv.loadUrl("https://open.spotify.com/", ENGLISH_HEADERS)
             webView = wv
             pollHandler.removeCallbacks(pollRunnable)
             pollHandler.postDelayed(pollRunnable, 1000)
@@ -284,7 +286,7 @@ object SpotifyWebPlayer {
         }
         commandReady = false
         activated = false
-        wv.post { wv.loadUrl("https://open.spotify.com/") }
+        wv.post { wv.loadUrl("https://open.spotify.com/", ENGLISH_HEADERS) }
         Log.d(TAG, "refreshLogin: reloaded player with logged-in session")
     }
 
@@ -325,7 +327,7 @@ object SpotifyWebPlayer {
 
     /** Last-resort cold start: navigate once to boot the player, then click play. */
     private fun navigateAndPlay(wv: WebView, path: String) {
-        wv.evaluateJavascript("window.location.assign('https://open.spotify.com/$path');", null)
+        wv.loadUrl("https://open.spotify.com/$path", ENGLISH_HEADERS)
         lastClickResult = null
         for (delay in longArrayOf(2000, 3000, 4000, 5000, 6500, 8000, 10000, 12000, 15000, 18000, 21000, 24000, 27000, 30000)) {
             wv.postDelayed({
@@ -368,6 +370,11 @@ object SpotifyWebPlayer {
             media: st.media ? [st.media.paused, Math.round(st.media.currentTime), Math.round(st.media.duration || 0)] : null,
             mediaCount: st.count,
             tracked: (window.__spotuiMedia || []).length,
+            icon: st.icon,
+            devId: !!window.__devId,
+            auth: !!window.__auth,
+            lang: document.documentElement.lang,
+            errs: window.__spotuiErrors || [],
             dialogText: (function(){ var d = q('[role="dialog"]'); return d ? (d.innerText || '').replace(/\s+/g, ' ').slice(0, 160) : null; })(),
             playBtn: !!q('[data-testid="play-button"]'),
             dur: dur ? dur.textContent : null,
@@ -463,7 +470,7 @@ object SpotifyWebPlayer {
         return runCatching {
             WebViewCompat.addDocumentStartJavaScript(
                 wv,
-                VISIBILITY_SPOOF_JS + "\n" + MEDIA_TRACK_JS + "\n" + AD_STATE_HOOK_JS,
+                VISIBILITY_SPOOF_JS + "\n" + LOCALE_SPOOF_JS + "\n" + MEDIA_TRACK_JS + "\n" + AD_STATE_HOOK_JS,
                 setOf(SPOTIFY_ORIGIN),
             )
             true
@@ -659,6 +666,25 @@ object SpotifyWebPlayer {
     // button (track/album/playlist page), then the now-playing transport, then
     // any button whose label starts with "Play". Never re-click when already
     // playing (label would say "Pause"). Returns 'clicked …' or 'no-play-button'.
+    private val LOCALE_SPOOF_JS = """
+        (function(){
+          function def(o, k, g){ try { Object.defineProperty(o, k, { get: g, configurable: true }); } catch (e) {} }
+          def(navigator, 'language', function(){ return 'en-US'; });
+          def(navigator, 'languages', function(){ return ['en-US', 'en']; });
+          if (!window.__spotuiErrors) {
+            window.__spotuiErrors = [];
+            window.addEventListener('error', function(e){
+              window.__spotuiErrors.push(String(e.message || e).slice(0, 80));
+              if (window.__spotuiErrors.length > 3) window.__spotuiErrors.shift();
+            });
+            window.addEventListener('unhandledrejection', function(e){
+              window.__spotuiErrors.push('rej:' + String(e.reason && e.reason.message || e.reason).slice(0, 80));
+              if (window.__spotuiErrors.length > 3) window.__spotuiErrors.shift();
+            });
+          }
+        })();
+    """.trimIndent()
+
     private val MEDIA_TRACK_JS = """
         (function(){
           if (window.__spotuiMedia) return;
@@ -688,14 +714,24 @@ object SpotifyWebPlayer {
           var durEl = document.querySelector('[data-testid="playback-duration"]');
           var durOk = !!(durEl && /\d/.test(durEl.textContent || ''));
           var byLabel = /pause|pozastav|pausa|pausar|pausier|pauze|paus/.test(label);
-          return { pp: pp, label: label, session: session, media: active, count: media.length,
-                   playing: session === 'playing' || !!active || (byLabel && !!now && durOk) };
+          var icon = pp ? pp.querySelector('svg path') : null;
+          var iconPath = icon ? (icon.getAttribute('d') || '') : '';
+          var iconState = iconPath.indexOf('M2.7 1a.7.7') === 0 ? true : (iconPath.indexOf('M3 1.713') === 0 ? false : null);
+          var domPlaying = iconState !== null ? iconState : byLabel;
+          return { pp: pp, label: label, session: session, media: active, count: media.length, icon: iconState,
+                   playing: session === 'playing' || !!active || (domPlaying && !!now && durOk) };
         }
         function spotuiDismissDialog(){
           var d = document.querySelector('[role="dialog"]');
           if (!d) return null;
           var close = d.querySelector('[data-testid="close-button"],[data-testid="modal-close"],button[aria-label*="lose" i],button[aria-label*="avřít" i],button[aria-label*="chlie" i],button[aria-label*="errar" i],button[aria-label*="ermer" i],button[aria-label*="hiudi" i]');
-          if (close) { close.click(); return 'dialog-closed'; }
+          var attempt = (window.__spotuiDlgTry = ((window.__spotuiDlgTry || 0) + 1) % 3);
+          if (attempt === 1 && close) { close.click(); return 'dialog-closed'; }
+          if (attempt === 0) {
+            var esc = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true });
+            document.dispatchEvent(esc);
+            return 'dialog-escape';
+          }
           var lang = (document.documentElement.lang || navigator.language || 'en').split('-')[0];
           var names = [];
           try { names.push(new Intl.DisplayNames([lang], { type: 'language' }).of(lang)); } catch (e) {}
@@ -814,9 +850,6 @@ object SpotifyWebPlayer {
             )
         }
 
-        // Never touch streaming media segments (they carry a Range header) — those
-        // are the real audio/video being fetched in chunks; intercepting them is
-        // what caused the stutter. Ad-only hosts get a silent.mp3.
         if (matchesAdId(url)) {
             Log.d(TAG, "adblock: silenced ad content by id $url")
             return runCatching {
@@ -826,6 +859,9 @@ object SpotifyWebPlayer {
             }.getOrNull()
         }
 
+        // Never touch streaming media segments (they carry a Range header) — those
+        // are the real audio/video being fetched in chunks; intercepting them is
+        // what caused the stutter. Ad-only hosts get a silent.mp3.
         val isRange = request.requestHeaders.keys.any { it.equals("Range", ignoreCase = true) }
         if (!isRange && audioAdPatterns.any { it in lower }) {
             Log.d(TAG, "adblock: silenced audio ad $url")
