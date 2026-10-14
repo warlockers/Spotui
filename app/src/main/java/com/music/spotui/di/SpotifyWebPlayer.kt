@@ -37,6 +37,7 @@ object SpotifyWebPlayer {
     @Volatile private var activityRef: java.lang.ref.WeakReference<Activity>? = null
     private val adIds = LinkedHashSet<String>()
     @Volatile private var lastRecreateMs = 0L
+    @Volatile var lastClickResult: String? = null
 
     @Volatile private var webView: WebView? = null
     @Volatile var pageReady = false
@@ -324,14 +325,51 @@ object SpotifyWebPlayer {
     /** Last-resort cold start: navigate once to boot the player, then click play. */
     private fun navigateAndPlay(wv: WebView, path: String) {
         wv.evaluateJavascript("window.location.assign('https://open.spotify.com/$path');", null)
-        for (delay in longArrayOf(2000, 3000, 4000, 5000, 6500, 8000, 10000, 12000)) {
+        lastClickResult = null
+        for (delay in longArrayOf(2000, 3000, 4000, 5000, 6500, 8000, 10000, 12000, 15000, 18000, 21000, 24000, 27000, 30000)) {
             wv.postDelayed({
+                if (isPlaying) return@postDelayed
                 wv.evaluateJavascript(clickPlayJs()) { r ->
+                    lastClickResult = r
                     if (r != null && r.contains("clicked")) Log.d(TAG, "play click: $r")
                 }
             }, delay)
         }
     }
+
+    fun diagnose(onResult: (String) -> Unit) {
+        val wv = webView
+        if (wv == null) {
+            onResult("no webview")
+            return
+        }
+        wv.post {
+            wv.evaluateJavascript(DIAGNOSTIC_JS) { r ->
+                val text = runCatching { org.json.JSONTokener(r).nextValue() as? String }.getOrNull() ?: r.orEmpty()
+                onResult(text)
+            }
+        }
+    }
+
+    private val DIAGNOSTIC_JS = """
+        (function(){
+          function q(s){ return document.querySelector(s); }
+          var pp = q('[data-testid="control-button-playpause"]');
+          var dur = q('[data-testid="playback-duration"]');
+          var body = (document.body && document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 140);
+          return JSON.stringify({
+            url: location.pathname,
+            title: document.title,
+            vis: document.visibilityState,
+            pp: pp ? (pp.getAttribute('aria-label') || '?') : null,
+            playBtn: !!q('[data-testid="play-button"]'),
+            dur: dur ? dur.textContent : null,
+            loginBtn: !!(q('[data-testid="login-button"]') || q('[data-testid="signup-button"]')),
+            dialog: !!q('[role="dialog"]'),
+            body: body
+          });
+        })();
+    """.trimIndent()
 
     fun resume() = eval(clickPlayJs())
     fun pause() = eval(pauseJs())
@@ -521,15 +559,14 @@ object SpotifyWebPlayer {
           } catch(e){}
           try {
             var OrigWS = window.WebSocket;
-            var Wrapped = function(url, protocols){
-              var ws = protocols === undefined ? new OrigWS(url) : new OrigWS(url, protocols);
-              ws.addEventListener('message', function(ev){
-                if (typeof ev.data === 'string') handleMessage(ev.data);
-              });
-              return ws;
+            var Wrapped = class extends OrigWS {
+              constructor(url, protocols){
+                if (protocols === undefined) super(url); else super(url, protocols);
+                this.addEventListener('message', function(ev){
+                  if (typeof ev.data === 'string') handleMessage(ev.data);
+                });
+              }
             };
-            Wrapped.prototype = OrigWS.prototype;
-            ['CONNECTING','OPEN','CLOSING','CLOSED'].forEach(function(n){ Wrapped[n] = OrigWS[n]; });
             window.WebSocket = Wrapped;
           } catch(e){}
         })();

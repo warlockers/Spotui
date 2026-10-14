@@ -2367,7 +2367,7 @@ object SongPlayer {
         embedActive = active
     }
 
-    private const val EMBED_START_TIMEOUT_MS = 20_000L
+    private const val EMBED_START_TIMEOUT_MS = 35_000L
     private const val EMBED_PREVIEW_MAX_MS = 35_000L
     private const val EMBED_PREVIEW_BLOCK_MINUTES = 30L
     private const val EMBED_TIMEOUT_BLOCK_MINUTES = 2L
@@ -2448,7 +2448,10 @@ object SongPlayer {
                 } else {
                     "playback did not start within ${EMBED_START_TIMEOUT_MS / 1000} s"
                 }
-                val detail = "$failure [isPlaying=${SpotifyWebPlayer.isPlaying}, pos=${SpotifyWebPlayer.positionMs / 1000}s, dur=${SpotifyWebPlayer.durationMs / 1000}s, expected=${expectedDurationMs / 1000}s, pageReady=${SpotifyWebPlayer.pageReady}, canPlay=${SpotifyWebPlayer.canPlay}]"
+                val pageInfo = kotlinx.coroutines.CompletableDeferred<String>()
+                SpotifyWebPlayer.diagnose { pageInfo.complete(it) }
+                val page = kotlinx.coroutines.withTimeoutOrNull(3_000L) { pageInfo.await() } ?: "no page info"
+                val detail = "$failure [isPlaying=${SpotifyWebPlayer.isPlaying}, pos=${SpotifyWebPlayer.positionMs / 1000}s, dur=${SpotifyWebPlayer.durationMs / 1000}s, expected=${expectedDurationMs / 1000}s, pageReady=${SpotifyWebPlayer.pageReady}, canPlay=${SpotifyWebPlayer.canPlay}, lastClick=${SpotifyWebPlayer.lastClickResult}, page=$page]"
                 embedLastFailure = detail
                 logResolution("Spotify: $detail, falling back")
                 spotifyRouteNote = "Spotify: $detail, falling back"
