@@ -9,6 +9,10 @@ import android.webkit.CookieManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import androidx.webkit.UserAgentMetadata
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 
 /**
  * Experimental "real Spotify" playback: rather than resolve a track from
@@ -27,9 +31,12 @@ import android.widget.FrameLayout
  */
 object SpotifyWebPlayer {
     private const val TAG = "SpotifyWebPlayer"
-    private const val DESKTOP_UA =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    private const val FALLBACK_CHROME_VERSION = "131.0.0.0"
+    private const val SPOTIFY_ORIGIN = "https://open.spotify.com"
+    private const val MAX_AD_IDS = 32
+    @Volatile private var activityRef: java.lang.ref.WeakReference<Activity>? = null
+    private val adIds = LinkedHashSet<String>()
+    @Volatile private var lastRecreateMs = 0L
 
     @Volatile private var webView: WebView? = null
     @Volatile var pageReady = false
@@ -99,12 +106,13 @@ object SpotifyWebPlayer {
             // Lets `chrome://inspect` attach to the hidden player for diagnosis.
             WebView.setWebContentsDebuggingEnabled(true)
             val wv = WebView(activity)
+            activityRef = java.lang.ref.WeakReference(activity)
             wv.settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
                 databaseEnabled = true
                 mediaPlaybackRequiresUserGesture = false
-                userAgentString = DESKTOP_UA
+                userAgentString = desktopUserAgent(chromeVersion(activity))
                 @Suppress("DEPRECATION")
                 setSupportMultipleWindows(false)
             }
@@ -115,6 +123,10 @@ object SpotifyWebPlayer {
                 fun onWidevine(ok: Boolean) {
                     canPlay = ok
                     Log.d(TAG, "widevine canPlay=$ok (via bridge)")
+                }
+                @android.webkit.JavascriptInterface
+                fun onAdIds(json: String) {
+                    recordAdIds(json)
                 }
                 @android.webkit.JavascriptInterface
                 fun onCommandReady() {
@@ -136,6 +148,8 @@ object SpotifyWebPlayer {
             cookies.flush()
             Log.d(TAG, "seeded sp_dc cookie into WebView jar")
             val appContext = activity.applicationContext
+            applyBrowserIdentity(wv, chromeVersion(activity))
+            val docStartInstalled = installDocumentStartScripts(wv)
             wv.webViewClient = object : WebViewClient() {
                 // Ad-free ("unlocked") playback, SpotiFuck-style: drop analytics and
                 // swap audio-ad streams for silence at the network layer, so the free
@@ -149,11 +163,31 @@ object SpotifyWebPlayer {
                 }
 
                 override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                    synchronized(adIds) { adIds.clear() }
                     // Inject as EARLY as possible: the off-screen WebView reports the
                     // page as hidden, and Spotify's Web Playback SDK refuses to
                     // register a device / start audio on a hidden page. Spoof the Page
                     // Visibility API to always report visible+focused.
-                    view?.evaluateJavascript(VISIBILITY_SPOOF_JS, null)
+                    if (!docStartInstalled) {
+                        view?.evaluateJavascript(VISIBILITY_SPOOF_JS, null)
+                        view?.evaluateJavascript(AD_STATE_HOOK_JS, null)
+                    }
+                }
+
+                override fun onRenderProcessGone(
+                    view: WebView?,
+                    detail: android.webkit.RenderProcessGoneDetail?,
+                ): Boolean {
+                    val owner = activityRef?.get()
+                    release()
+                    commandReady = false
+                    activated = false
+                    val now = System.currentTimeMillis()
+                    if (owner != null && !owner.isFinishing && now - lastRecreateMs > 10_000L) {
+                        lastRecreateMs = now
+                        owner.runOnUiThread { attach(owner) }
+                    }
+                    return true
                 }
 
                 override fun onPageFinished(view: WebView?, url: String?) {
@@ -216,6 +250,7 @@ object SpotifyWebPlayer {
             wv.post { wv.translationX = wv.width.toFloat() + 2000f }
             wv.loadUrl("https://open.spotify.com/")
             webView = wv
+            pollHandler.removeCallbacks(pollRunnable)
             pollHandler.postDelayed(pollRunnable, 1000)
             Log.d(TAG, "WebView attached")
         } catch (e: Exception) {
@@ -332,6 +367,173 @@ object SpotifyWebPlayer {
         val wv = webView ?: return
         wv.post { wv.evaluateJavascript(js, null) }
     }
+
+    private fun chromeVersion(context: Context): String =
+        runCatching { WebViewCompat.getCurrentWebViewPackage(context)?.versionName }
+            .getOrNull()
+            ?.takeIf { it.matches(Regex("""\d+(\.\d+)+""")) }
+            ?: FALLBACK_CHROME_VERSION
+
+    private fun desktopUserAgent(version: String): String {
+        val major = version.substringBefore('.')
+        return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/$major.0.0.0 Safari/537.36"
+    }
+
+    private fun applyBrowserIdentity(wv: WebView, version: String) {
+        val major = version.substringBefore('.')
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
+            WebSettingsCompat.setRequestedWithHeaderOriginAllowList(wv.settings, emptySet())
+        }
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) {
+            fun brand(name: String, majorVersion: String, full: String) =
+                UserAgentMetadata.BrandVersion.Builder()
+                    .setBrand(name)
+                    .setMajorVersion(majorVersion)
+                    .setFullVersion(full)
+                    .build()
+            val metadata = UserAgentMetadata.Builder()
+                .setBrandVersionList(
+                    listOf(
+                        brand("Not;A=Brand", "8", "8.0.0.0"),
+                        brand("Chromium", major, version),
+                        brand("Google Chrome", major, version),
+                    ),
+                )
+                .setFullVersion(version)
+                .setPlatform("Windows")
+                .setPlatformVersion("10.0.0")
+                .setArchitecture("x86")
+                .setBitness(64)
+                .setModel("")
+                .setMobile(false)
+                .build()
+            WebSettingsCompat.setUserAgentMetadata(wv.settings, metadata)
+        }
+    }
+
+    private fun installDocumentStartScripts(wv: WebView): Boolean {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) return false
+        return runCatching {
+            WebViewCompat.addDocumentStartJavaScript(
+                wv,
+                VISIBILITY_SPOOF_JS + "\n" + AD_STATE_HOOK_JS,
+                setOf(SPOTIFY_ORIGIN),
+            )
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun recordAdIds(json: String) {
+        val parsed = runCatching {
+            val array = org.json.JSONArray(json)
+            (0 until array.length()).mapNotNull { array.optString(it).takeIf { id -> id.isNotBlank() } }
+        }.getOrDefault(emptyList())
+        if (parsed.isEmpty()) return
+        synchronized(adIds) {
+            adIds.addAll(parsed)
+            while (adIds.size > MAX_AD_IDS) adIds.remove(adIds.first())
+        }
+        Log.d(TAG, "adblock: tracking ${parsed.size} ad content ids")
+    }
+
+    private fun matchesAdId(url: String): Boolean = synchronized(adIds) {
+        adIds.isNotEmpty() && adIds.any { it in url }
+    }
+
+    private val AD_STATE_HOOK_JS = """
+        (function(){
+          if (window.__spotuiAdHook) return;
+          window.__spotuiAdHook = 1;
+          var MAX = $MAX_AD_IDS, ids = [], seen = {}, dirty = false, budget = 0;
+          var ID_RE = /^[A-Za-z0-9_-]{8,128}${'$'}/;
+          function add(v){
+            if (typeof v !== 'string' || !ID_RE.test(v) || seen[v]) return;
+            seen[v] = 1; ids.push(v); dirty = true;
+            while (ids.length > MAX) delete seen[ids.shift()];
+          }
+          function flagged(o){
+            var m = o.metadata || {};
+            var c = [o.content_type, o.contentType, o.type, o.is_ad, o.isAd, m.content_type, m.is_advertisement, m.is_ad, m.isAd];
+            for (var i = 0; i < c.length; i++) {
+              var v = c[i];
+              if (v === true) return true;
+              if (typeof v === 'string') {
+                var u = v.toUpperCase();
+                if (u === 'AD' || u === 'ADVERTISEMENT' || u === 'TRUE') return true;
+              }
+            }
+            return false;
+          }
+          function scan(node, ad, depth){
+            if (!node || typeof node !== 'object' || depth > 14 || budget-- <= 0) return;
+            var isAd = ad || (!Array.isArray(node) && flagged(node));
+            for (var k in node) {
+              var v = node[k];
+              if (isAd && /file_?ids?${'$'}/i.test(k)) {
+                if (typeof v === 'string') add(v);
+                else if (Array.isArray(v)) v.forEach(function(e){
+                  if (typeof e === 'string') add(e);
+                  else if (e) { add(e.file_id); add(e.fileId); add(e.id); }
+                });
+              }
+              if (v && typeof v === 'object') scan(v, isAd, depth + 1);
+            }
+          }
+          function publish(){
+            if (!dirty) return;
+            dirty = false;
+            try { SpotuiBridge.onAdIds(JSON.stringify(ids)); } catch(e){}
+          }
+          function inspect(obj){ budget = 6000; scan(obj, false, 0); publish(); }
+          function gunzip(b64){
+            var bin = atob(b64), bytes = new Uint8Array(bin.length);
+            for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            var stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+            return new Response(stream).text();
+          }
+          function handleMessage(text){
+            if (typeof text !== 'string' || text.length > 8000000) return;
+            var parsed;
+            try { parsed = JSON.parse(text); } catch(e){ return; }
+            inspect(parsed);
+            var gz = parsed && parsed.headers && /gzip/i.test(parsed.headers['Transfer-Encoding'] || '');
+            if (gz && parsed.payloads && parsed.payloads.length && typeof DecompressionStream === 'function') {
+              parsed.payloads.forEach(function(p){
+                if (typeof p !== 'string') { inspect(p); return; }
+                gunzip(p).then(function(t){ try { inspect(JSON.parse(t)); } catch(e){} }).catch(function(){});
+              });
+            }
+          }
+          try {
+            var origFetch = window.fetch;
+            window.fetch = function(){
+              var p = origFetch.apply(this, arguments);
+              try {
+                var a = arguments[0];
+                var u = String(a && a.url ? a.url : a);
+                if (/state|connect-state|playback/i.test(u)) {
+                  p.then(function(r){ try { r.clone().json().then(inspect).catch(function(){}); } catch(e){} }).catch(function(){});
+                }
+              } catch(e){}
+              return p;
+            };
+          } catch(e){}
+          try {
+            var OrigWS = window.WebSocket;
+            var Wrapped = function(url, protocols){
+              var ws = protocols === undefined ? new OrigWS(url) : new OrigWS(url, protocols);
+              ws.addEventListener('message', function(ev){
+                if (typeof ev.data === 'string') handleMessage(ev.data);
+              });
+              return ws;
+            };
+            Wrapped.prototype = OrigWS.prototype;
+            ['CONNECTING','OPEN','CLOSING','CLOSED'].forEach(function(n){ Wrapped[n] = OrigWS[n]; });
+            window.WebSocket = Wrapped;
+          } catch(e){}
+        })();
+    """.trimIndent()
 
     // Force the page to always look visible + focused. The hidden off-screen
     // WebView otherwise reports document.hidden=true, and Spotify's Web Playback
@@ -516,6 +718,15 @@ object SpotifyWebPlayer {
         // Never touch streaming media segments (they carry a Range header) — those
         // are the real audio/video being fetched in chunks; intercepting them is
         // what caused the stutter. Ad-only hosts get a silent.mp3.
+        if (matchesAdId(url)) {
+            Log.d(TAG, "adblock: silenced ad content by id $url")
+            return runCatching {
+                android.webkit.WebResourceResponse(
+                    "audio/mpeg", null, context.assets.open("silent.mp3"),
+                )
+            }.getOrNull()
+        }
+
         val isRange = request.requestHeaders.keys.any { it.equals("Range", ignoreCase = true) }
         if (!isRange && audioAdPatterns.any { it in lower }) {
             Log.d(TAG, "adblock: silenced audio ad $url")

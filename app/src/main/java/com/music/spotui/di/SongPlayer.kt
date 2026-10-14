@@ -2370,10 +2370,16 @@ object SongPlayer {
     private const val EMBED_START_TIMEOUT_MS = 20_000L
     private const val EMBED_PREVIEW_MAX_MS = 35_000L
     private const val EMBED_PREVIEW_BLOCK_MINUTES = 30L
-    private const val EMBED_TIMEOUT_BLOCK_MINUTES = 5L
+    private const val EMBED_TIMEOUT_BLOCK_MINUTES = 2L
 
     @Volatile private var embedBlockedUntilMs = 0L
     @Volatile private var spotifyRouteNote: String? = null
+    @Volatile private var embedLastFailure: String? = null
+
+    fun resetSpotifyBlock() {
+        embedBlockedUntilMs = 0L
+        embedLastFailure = null
+    }
     @Volatile var onEmbedTrackEnded: (() -> Unit)? = null
 
     private fun spotifyEmbedEnabled(appContext: Context): Boolean =
@@ -2391,7 +2397,8 @@ object SongPlayer {
     private fun spotifyUnavailableReason(appContext: Context): String? = when {
         !spotifyEmbedEnabled(appContext) -> "disabled in provider settings"
         com.music.spotui.data.api.SpotifySession.spDc(appContext).isBlank() -> "not logged in to Spotify"
-        System.currentTimeMillis() < embedBlockedUntilMs -> "temporarily disabled after a failed attempt"
+        System.currentTimeMillis() < embedBlockedUntilMs ->
+            "temporarily disabled for ${(embedBlockedUntilMs - System.currentTimeMillis()) / 60_000L + 1} min after a failed attempt: ${embedLastFailure ?: "unknown"}"
         !SpotifyWebPlayer.canPlay -> "web player not ready (Widevine check pending or unavailable)"
         else -> null
     }
@@ -2441,8 +2448,10 @@ object SongPlayer {
                 } else {
                     "playback did not start within ${EMBED_START_TIMEOUT_MS / 1000} s"
                 }
-                logResolution("Spotify: $failure, falling back")
-                spotifyRouteNote = "Spotify: $failure, falling back"
+                val detail = "$failure [isPlaying=${SpotifyWebPlayer.isPlaying}, pos=${SpotifyWebPlayer.positionMs / 1000}s, dur=${SpotifyWebPlayer.durationMs / 1000}s, expected=${expectedDurationMs / 1000}s, pageReady=${SpotifyWebPlayer.pageReady}, canPlay=${SpotifyWebPlayer.canPlay}]"
+                embedLastFailure = detail
+                logResolution("Spotify: $detail, falling back")
+                spotifyRouteNote = "Spotify: $detail, falling back"
                 val minutes = if (previewOnly) EMBED_PREVIEW_BLOCK_MINUTES else EMBED_TIMEOUT_BLOCK_MINUTES
                 embedBlockedUntilMs = System.currentTimeMillis() + minutes * 60_000L
                 SpotifyWebPlayer.pause()

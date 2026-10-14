@@ -780,6 +780,7 @@ fun SettingsScreen(navController: NavController) {
                         if (footerTaps >= 5 && !spotifyUnlocked) {
                             com.music.spotui.data.preferences.setSpotifyProviderUnlocked(context, true)
                             spotifyUnlocked = true
+                            com.music.spotui.di.SongPlayer.resetSpotifyBlock()
                             (context as? android.app.Activity)?.let { com.music.spotui.di.SpotifyWebPlayer.attach(it) }
                             android.widget.Toast.makeText(context, "Spotify provider unlocked", android.widget.Toast.LENGTH_SHORT).show()
                         }
@@ -929,6 +930,7 @@ fun SettingsScreen(navController: NavController) {
                                         checked = isEnabled,
                                         onCheckedChange = { checked ->
                                             setAudioProviderEnabled(context, item.id, checked)
+                                            if (item == AudioProviderOrderItem.SPOTIFY) com.music.spotui.di.SongPlayer.resetSpotifyBlock()
                                             disabledSet = com.music.spotui.data.preferences.getDisabledAudioProviders(context)
                                         },
                                         colors = CheckboxDefaults.colors(
