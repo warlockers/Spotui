@@ -344,26 +344,31 @@ object SpotifyWebPlayer {
             return
         }
         wv.post {
-            wv.evaluateJavascript(DIAGNOSTIC_JS) { r ->
+            wv.evaluateJavascript(diagnosticJs()) { r ->
                 val text = runCatching { org.json.JSONTokener(r).nextValue() as? String }.getOrNull() ?: r.orEmpty()
                 onResult(text)
             }
         }
     }
 
-    private val DIAGNOSTIC_JS = """
+    private fun diagnosticJs() = """
         (function(){
+          $PLAYER_STATE_JS
           function q(s){ return document.querySelector(s); }
-          var pp = q('[data-testid="control-button-playpause"]');
+          var st = spotuiState();
           var dur = q('[data-testid="playback-duration"]');
+          var now = q('[data-testid="now-playing-widget"]');
           var body = (document.body && document.body.innerText || '').replace(/\s+/g, ' ').slice(0, 140);
           return JSON.stringify({
             url: location.pathname,
-            title: document.title,
             vis: document.visibilityState,
-            pp: pp ? (pp.getAttribute('aria-label') || '?') : null,
+            label: st.label,
+            session: st.session,
+            media: st.media ? [st.media.paused, Math.round(st.media.currentTime), Math.round(st.media.duration || 0)] : null,
+            mediaCount: st.count,
             playBtn: !!q('[data-testid="play-button"]'),
             dur: dur ? dur.textContent : null,
+            now: now ? (now.innerText || '').replace(/\s+/g, ' ').slice(0, 60) : null,
             loginBtn: !!(q('[data-testid="login-button"]') || q('[data-testid="signup-button"]')),
             dialog: !!q('[role="dialog"]'),
             body: body
@@ -651,19 +656,31 @@ object SpotifyWebPlayer {
     // button (track/album/playlist page), then the now-playing transport, then
     // any button whose label starts with "Play". Never re-click when already
     // playing (label would say "Pause"). Returns 'clicked …' or 'no-play-button'.
+    private val PLAYER_STATE_JS = """
+        function spotuiState(){
+          var pp = document.querySelector('[data-testid="control-button-playpause"]');
+          var label = pp ? (pp.getAttribute('aria-label') || '').toLowerCase() : '';
+          var session = (navigator.mediaSession && navigator.mediaSession.playbackState) || '';
+          var media = document.querySelectorAll('audio,video'), active = null;
+          for (var i = 0; i < media.length; i++) {
+            var m = media[i];
+            if (!m.paused && !m.ended && m.readyState > 1) { active = m; break; }
+          }
+          var byLabel = /pause|pozastav|pausa|pausar|pausier|pauze|paus/.test(label);
+          return { pp: pp, label: label, session: session, media: active, count: media.length,
+                   playing: session === 'playing' || !!active || byLabel };
+        }
+    """.trimIndent()
+
     private fun clickPlayJs() =
         """
         (function(){
-          // Already playing? The transport button reads "Pause" — do nothing, so the
-          // poll loop stops re-clicking (which could toggle or hit another track).
-          var pp=document.querySelector('[data-testid="control-button-playpause"]');
-          if (pp && (pp.getAttribute('aria-label')||'').toLowerCase().indexOf('pause')>-1)
-            return 'already-playing';
-          // Click the main context Play button (the big one on the track page).
-          var b=document.querySelector('[data-testid="play-button"]');
-          if (b && (b.getAttribute('aria-label')||'').toLowerCase().indexOf('pause')===-1){
-            b.click(); return 'clicked';
-          }
+          $PLAYER_STATE_JS
+          var st = spotuiState();
+          if (st.playing) return 'already-playing';
+          var b = document.querySelector('[data-testid="play-button"]');
+          if (b) { b.click(); return 'clicked'; }
+          if (st.pp) { st.pp.click(); return 'clicked-transport'; }
           return 'no-play-button';
         })();
         """.trimIndent()
@@ -671,9 +688,9 @@ object SpotifyWebPlayer {
     private fun pauseJs() =
         """
         (function(){
-          var b = document.querySelector('[data-testid="control-button-playpause"]');
-          if (b){ var lbl=(b.getAttribute('aria-label')||'').toLowerCase();
-                  if (lbl.indexOf('pause')!==-1){ b.click(); return 'paused'; } }
+          $PLAYER_STATE_JS
+          var st = spotuiState();
+          if (st.playing && st.pp) { st.pp.click(); return 'paused'; }
           return 'not-playing';
         })();
         """.trimIndent()
@@ -781,15 +798,20 @@ object SpotifyWebPlayer {
     private fun progressJs() =
         """
         (function(){
+          $PLAYER_STATE_JS
           function t2s(t){ if(!t) return -1; var p=t.trim().split(':');
             if(!p.length) return -1; var s=0;
             for(var i=0;i<p.length;i++){ var n=parseInt(p[i],10); if(isNaN(n)) return -1; s=s*60+n; }
             return s; }
           var pe=document.querySelector('[data-testid="playback-position"]');
           var de=document.querySelector('[data-testid="playback-duration"]');
-          var pp=document.querySelector('[data-testid="control-button-playpause"]');
-          var playing=(pp&&(pp.getAttribute('aria-label')||'').toLowerCase().indexOf('pause')>-1)?'1':'0';
-          return t2s(pe&&pe.textContent)+'|'+t2s(de&&de.textContent)+'|'+playing;
+          var st=spotuiState();
+          var pos=t2s(pe&&pe.textContent), dur=t2s(de&&de.textContent);
+          if (st.media) {
+            if (dur<0 && isFinite(st.media.duration) && st.media.duration>0) dur=Math.round(st.media.duration);
+            if (pos<0) pos=Math.floor(st.media.currentTime);
+          }
+          return pos+'|'+dur+'|'+(st.playing?'1':'0');
         })();
         """.trimIndent()
 }

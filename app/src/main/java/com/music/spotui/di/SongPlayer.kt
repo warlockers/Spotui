@@ -2367,9 +2367,8 @@ object SongPlayer {
         embedActive = active
     }
 
-    private const val EMBED_START_TIMEOUT_MS = 35_000L
-    private const val EMBED_PREVIEW_MAX_MS = 35_000L
-    private const val EMBED_PREVIEW_BLOCK_MINUTES = 30L
+    private const val EMBED_START_TIMEOUT_MS = 45_000L
+    private const val EMBED_DURATION_TOLERANCE_MS = 10_000L
     private const val EMBED_TIMEOUT_BLOCK_MINUTES = 2L
 
     @Volatile private var embedBlockedUntilMs = 0L
@@ -2409,13 +2408,7 @@ object SongPlayer {
         val duration = SpotifyWebPlayer.durationMs
         if (!SpotifyWebPlayer.isPlaying || duration <= 0 || SpotifyWebPlayer.positionMs <= 0) return false
         return expectedDurationMs <= 0 ||
-            kotlin.math.abs(duration - expectedDurationMs) <= 5_000L ||
-            duration <= EMBED_PREVIEW_MAX_MS
-    }
-
-    private fun embedPreviewOnly(expectedDurationMs: Long): Boolean {
-        val duration = SpotifyWebPlayer.durationMs
-        return duration in 1..EMBED_PREVIEW_MAX_MS && expectedDurationMs > 60_000L
+            kotlin.math.abs(duration - expectedDurationMs) <= EMBED_DURATION_TOLERANCE_MS
     }
 
     private fun startEmbedPlayback(
@@ -2440,14 +2433,8 @@ object SongPlayer {
                 delay(250)
             }
             if (currentRequest != song) return@launch
-            val started = embedStarted(expectedDurationMs)
-            val previewOnly = started && !episode && embedPreviewOnly(expectedDurationMs)
-            if (!started || previewOnly) {
-                val failure = if (previewOnly) {
-                    "only a 30 s preview is available (full tracks need a logged-in account)"
-                } else {
-                    "playback did not start within ${EMBED_START_TIMEOUT_MS / 1000} s"
-                }
+            if (!embedStarted(expectedDurationMs)) {
+                val failure = "playback did not start within ${EMBED_START_TIMEOUT_MS / 1000} s"
                 val pageInfo = kotlinx.coroutines.CompletableDeferred<String>()
                 SpotifyWebPlayer.diagnose { pageInfo.complete(it) }
                 val page = kotlinx.coroutines.withTimeoutOrNull(3_000L) { pageInfo.await() } ?: "no page info"
@@ -2455,8 +2442,7 @@ object SongPlayer {
                 embedLastFailure = detail
                 logResolution("Spotify: $detail, falling back")
                 spotifyRouteNote = "Spotify: $detail, falling back"
-                val minutes = if (previewOnly) EMBED_PREVIEW_BLOCK_MINUTES else EMBED_TIMEOUT_BLOCK_MINUTES
-                embedBlockedUntilMs = System.currentTimeMillis() + minutes * 60_000L
+                embedBlockedUntilMs = System.currentTimeMillis() + EMBED_TIMEOUT_BLOCK_MINUTES * 60_000L
                 SpotifyWebPlayer.pause()
                 withContext(Dispatchers.Main) {
                     setEmbedActive(false)
