@@ -530,7 +530,9 @@ object SongPlayer {
                 startEmbedPlayback(song, appContext, song.removePrefix("episode:"), true, 0L)
                 return
             }
-            spotifyRouteNote = "Spotify: skipped ($reason)"
+            if (com.music.spotui.data.preferences.isSpotifyProviderUnlocked(appContext)) {
+                spotifyRouteNote = "Spotify: skipped ($reason)"
+            }
         } else if (spotifyEmbedEnabled(appContext)) {
             val downloadedPath = com.music.spotui.data.preferences.downloadedPathForQuery(appContext, song)
             var skipReason: String? = when {
@@ -2375,7 +2377,8 @@ object SongPlayer {
     @Volatile var onEmbedTrackEnded: (() -> Unit)? = null
 
     private fun spotifyEmbedEnabled(appContext: Context): Boolean =
-        com.music.spotui.data.preferences.isAudioProviderEnabled(
+        com.music.spotui.data.preferences.isSpotifyProviderUnlocked(appContext) &&
+            com.music.spotui.data.preferences.isAudioProviderEnabled(
             appContext,
             com.music.spotui.data.preferences.AudioProviderOrderItem.SPOTIFY.id,
         )

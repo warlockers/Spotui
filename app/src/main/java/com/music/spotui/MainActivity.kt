@@ -68,9 +68,6 @@ class MainActivity : ComponentActivity() {
                 // A surface container using the 'background' color from the theme
                     App()
 
-                // New-release check (GitHub): prompts Upgrade / Dismiss / Don't show again.
-                com.music.spotui.ui.components.UpdatePrompt()
-
                 // Default link handler prompt: helps user enable open.spotify.com defaults.
                 com.music.spotui.ui.components.DefaultAppPrompt()
             }
@@ -79,7 +76,9 @@ class MainActivity : ComponentActivity() {
         // Experimental Spotify web-player engine: attach its hidden WebView AFTER
         // setContent so the Compose content view doesn't replace/orphan it (an
         // orphaned WebView gets a 0×0 viewport and Spotify won't render/navigate).
-        com.music.spotui.di.SpotifyWebPlayer.attach(this)
+        if (com.music.spotui.data.preferences.isSpotifyProviderUnlocked(this)) {
+            com.music.spotui.di.SpotifyWebPlayer.attach(this)
+        }
 
         // Perform background auto-backup if a backup directory is configured.
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {

@@ -74,7 +74,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.navigation.NavController
 import com.music.spotui.data.BatteryOptimizationHelper
 import com.music.spotui.data.preferences.CROSSFADE_MAX_MS
@@ -91,10 +90,6 @@ import com.music.spotui.data.preferences.setDownloadQuality
 import com.music.spotui.data.preferences.setAutoPlayEnabled
 import com.music.spotui.data.preferences.setVideoFallbackEnabled
 import com.music.spotui.data.preferences.setWifiQuality
-import com.music.spotui.data.preferences.getUpdateRepoUrl
-import com.music.spotui.data.preferences.setUpdateRepoUrl
-import com.music.spotui.data.preferences.resetUpdateRepoUrl
-import com.music.spotui.data.preferences.DEFAULT_UPDATE_REPO_URL
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.OpenInNew
@@ -119,7 +114,9 @@ fun SettingsScreen(navController: NavController) {
     var videoFallback by remember { mutableStateOf(isVideoFallbackEnabled(context)) }
     var autoPlay by remember { mutableStateOf(isAutoPlayEnabled(context)) }
     var batteryOptExempt by remember { mutableStateOf(BatteryOptimizationHelper.isIgnoringBatteryOptimization(context)) }
-    var updateRepoUrl by remember { mutableStateOf(getUpdateRepoUrl(context)) }
+    var spotifyUnlocked by remember { mutableStateOf(com.music.spotui.data.preferences.isSpotifyProviderUnlocked(context)) }
+    var footerTaps by remember { mutableStateOf(0) }
+    var lastFooterTapMs by remember { mutableStateOf(0L) }
     var isDefaultLinkHandler by remember { mutableStateOf(DefaultLinkHelper.isAppDefaultLinkHandler(context)) }
     var showDefaultGuide by remember { mutableStateOf(false) }
     var showProviderStatusDialog by remember { mutableStateOf(false) }
@@ -168,7 +165,6 @@ fun SettingsScreen(navController: NavController) {
                     crossfadeMs = getCrossfadeMs(context).toFloat()
                     videoFallback = isVideoFallbackEnabled(context)
                     autoPlay = isAutoPlayEnabled(context)
-                    updateRepoUrl = getUpdateRepoUrl(context)
                     backupDirUri = BackupPref.getDirectoryUri(context)
                     isAutoBackup = BackupPref.isAutoBackupEnabled(context)
                 }
@@ -441,7 +437,7 @@ fun SettingsScreen(navController: NavController) {
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Audio Provider Priority", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                    Text(providerOrder.joinToString(" → ") { it.displayName }, color = Color(0xFFB3B3B3), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(providerOrder.filter { spotifyUnlocked || it != AudioProviderOrderItem.SPOTIFY }.joinToString(" → ") { it.displayName }, color = Color(0xFFB3B3B3), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 Icon(
                     imageVector = Icons.Filled.SwapVert,
@@ -581,52 +577,6 @@ fun SettingsScreen(navController: NavController) {
                     activeTrackColor = AppPalette,
                     inactiveTrackColor = Color(0xFF333333),
                 ),
-            )
-            Spacer(Modifier.height(12.dp))
-            SectionTitle("Updates")
-            Text(
-                "Update source repository",
-                color = Color.White,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Text(
-                "GitHub repo URL used to check for new versions",
-                color = Color(0xFFB3B3B3),
-                fontSize = 12.sp,
-            )
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = updateRepoUrl,
-                onValueChange = {
-                    updateRepoUrl = it
-                    setUpdateRepoUrl(context, it)
-                },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    focusedBorderColor = AppPalette,
-                    unfocusedBorderColor = Color(0xFF333333),
-                    cursorColor = AppPalette,
-                    focusedPlaceholderColor = Color(0xFF666666),
-                    unfocusedPlaceholderColor = Color(0xFF666666),
-                ),
-                placeholder = { Text("https://github.com/Owner/Repo") },
-                trailingIcon = {
-                    Icon(
-                        imageVector = Icons.Filled.Refresh,
-                        contentDescription = "Reset to default",
-                        tint = if (updateRepoUrl != DEFAULT_UPDATE_REPO_URL) AppPalette else Color(0xFF444444),
-                        modifier = Modifier
-                            .padding(end = 4.dp)
-                            .clickable {
-                                updateRepoUrl = DEFAULT_UPDATE_REPO_URL
-                                resetUpdateRepoUrl(context)
-                            }
-                    )
-                },
             )
             Spacer(Modifier.height(12.dp))
             SectionTitle("Backup & Restore")
@@ -817,10 +767,23 @@ fun SettingsScreen(navController: NavController) {
                     .padding(vertical = 14.dp)
             )
             Spacer(Modifier.height(24.dp))
-            val uriHandler = LocalUriHandler.current
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clickable(
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                        indication = null,
+                    ) {
+                        val now = System.currentTimeMillis()
+                        footerTaps = if (now - lastFooterTapMs > 2000L) 1 else footerTaps + 1
+                        lastFooterTapMs = now
+                        if (footerTaps >= 5 && !spotifyUnlocked) {
+                            com.music.spotui.data.preferences.setSpotifyProviderUnlocked(context, true)
+                            spotifyUnlocked = true
+                            (context as? android.app.Activity)?.let { com.music.spotui.di.SpotifyWebPlayer.attach(it) }
+                            android.widget.Toast.makeText(context, "Spotify provider unlocked", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
                     .padding(vertical = 8.dp),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically
@@ -832,13 +795,10 @@ fun SettingsScreen(navController: NavController) {
                     fontWeight = FontWeight.Medium,
                 )
                 Text(
-                    text = "Hazhan Salih",
+                    text = "Warlockers",
                     color = Color.White,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.clickable {
-                        uriHandler.openUri("https://github.com/H4zh4n/Spotui/")
-                    }
                 )
             }
             Spacer(Modifier.height(40.dp))
@@ -952,7 +912,8 @@ fun SettingsScreen(navController: NavController) {
                     Column {
                         Text("Check to enable/disable and re-order providers for streaming & downloads:", color = Color.Gray, fontSize = 12.sp)
                         Spacer(Modifier.height(8.dp))
-                        providerOrder.forEachIndexed { index, item ->
+                        val visibleProviders = providerOrder.filter { spotifyUnlocked || it != AudioProviderOrderItem.SPOTIFY }
+                        visibleProviders.forEachIndexed { index, item ->
                             val isYoutube = item == AudioProviderOrderItem.YOUTUBE_MUSIC
                             val isEnabled = if (isYoutube) true else item.id !in disabledSet
                             Row(
@@ -986,21 +947,23 @@ fun SettingsScreen(navController: NavController) {
                                 if (index > 0) {
                                     IconButton(onClick = {
                                         val mutable = providerOrder.toMutableList()
-                                        val temp = mutable[index]
-                                        mutable[index] = mutable[index - 1]
-                                        mutable[index - 1] = temp
+                                        val a = mutable.indexOf(item)
+                                        val b = mutable.indexOf(visibleProviders[index - 1])
+                                        mutable[a] = visibleProviders[index - 1]
+                                        mutable[b] = item
                                         providerOrder = mutable
                                         setAudioProviderOrder(context, mutable)
                                     }) {
                                         Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Move up", tint = AppPalette)
                                     }
                                 }
-                                if (index < providerOrder.size - 1) {
+                                if (index < visibleProviders.size - 1) {
                                     IconButton(onClick = {
                                         val mutable = providerOrder.toMutableList()
-                                        val temp = mutable[index]
-                                        mutable[index] = mutable[index + 1]
-                                        mutable[index + 1] = temp
+                                        val a = mutable.indexOf(item)
+                                        val b = mutable.indexOf(visibleProviders[index + 1])
+                                        mutable[a] = visibleProviders[index + 1]
+                                        mutable[b] = item
                                         providerOrder = mutable
                                         setAudioProviderOrder(context, mutable)
                                     }) {

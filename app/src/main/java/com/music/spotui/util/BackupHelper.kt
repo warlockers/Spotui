@@ -16,7 +16,6 @@ import com.music.spotui.data.preferences.getCellularQuality
 import com.music.spotui.data.preferences.getCrossfadeMs
 import com.music.spotui.data.preferences.getDownloadQuality
 import com.music.spotui.data.preferences.getLikedSongIds
-import com.music.spotui.data.preferences.getUpdateRepoUrl
 import com.music.spotui.data.preferences.getWifiQuality
 import com.music.spotui.data.preferences.exportPortableAlternativeStreams
 import com.music.spotui.data.preferences.importPortableAlternativeStreams
@@ -30,7 +29,6 @@ import com.music.spotui.data.preferences.setCrossfadeDjMode
 import com.music.spotui.data.preferences.setCrossfadeMs
 import com.music.spotui.data.preferences.setDownloadQuality
 import com.music.spotui.data.preferences.setLibraryGridView
-import com.music.spotui.data.preferences.setUpdateRepoUrl
 import com.music.spotui.data.preferences.setVideoFallbackEnabled
 import com.music.spotui.data.preferences.setWifiQuality
 import kotlinx.coroutines.CoroutineScope
@@ -99,7 +97,6 @@ object BackupHelper {
                     put("videoFallback", isVideoFallbackEnabled(context))
                     put("autoPlay", isAutoPlayEnabled(context))
                     put("libraryGridView", isLibraryGridView(context))
-                    put("updateRepoUrl", getUpdateRepoUrl(context))
                 }
                 put("settings", settingsObj)
 
@@ -267,7 +264,6 @@ object BackupHelper {
                 if (s.has("videoFallback")) setVideoFallbackEnabled(context, s.getBoolean("videoFallback"))
                 if (s.has("autoPlay")) setAutoPlayEnabled(context, s.getBoolean("autoPlay"))
                 if (s.has("libraryGridView")) setLibraryGridView(context, s.getBoolean("libraryGridView"))
-                if (s.has("updateRepoUrl")) setUpdateRepoUrl(context, s.getString("updateRepoUrl"))
             }
 
             // 4. Restore pinned track matches (Alternative stream). Older backups don't have this section.
