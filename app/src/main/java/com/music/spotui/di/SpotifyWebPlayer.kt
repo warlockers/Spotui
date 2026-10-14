@@ -171,6 +171,7 @@ object SpotifyWebPlayer {
                     // Visibility API to always report visible+focused.
                     if (!docStartInstalled) {
                         view?.evaluateJavascript(VISIBILITY_SPOOF_JS, null)
+                        view?.evaluateJavascript(MEDIA_TRACK_JS, null)
                         view?.evaluateJavascript(AD_STATE_HOOK_JS, null)
                     }
                 }
@@ -366,6 +367,8 @@ object SpotifyWebPlayer {
             session: st.session,
             media: st.media ? [st.media.paused, Math.round(st.media.currentTime), Math.round(st.media.duration || 0)] : null,
             mediaCount: st.count,
+            tracked: (window.__spotuiMedia || []).length,
+            dialogText: (function(){ var d = q('[role="dialog"]'); return d ? (d.innerText || '').replace(/\s+/g, ' ').slice(0, 160) : null; })(),
             playBtn: !!q('[data-testid="play-button"]'),
             dur: dur ? dur.textContent : null,
             now: now ? (now.innerText || '').replace(/\s+/g, ' ').slice(0, 60) : null,
@@ -460,7 +463,7 @@ object SpotifyWebPlayer {
         return runCatching {
             WebViewCompat.addDocumentStartJavaScript(
                 wv,
-                VISIBILITY_SPOOF_JS + "\n" + AD_STATE_HOOK_JS,
+                VISIBILITY_SPOOF_JS + "\n" + MEDIA_TRACK_JS + "\n" + AD_STATE_HOOK_JS,
                 setOf(SPOTIFY_ORIGIN),
             )
             true
@@ -656,19 +659,37 @@ object SpotifyWebPlayer {
     // button (track/album/playlist page), then the now-playing transport, then
     // any button whose label starts with "Play". Never re-click when already
     // playing (label would say "Pause"). Returns 'clicked …' or 'no-play-button'.
+    private val MEDIA_TRACK_JS = """
+        (function(){
+          if (window.__spotuiMedia) return;
+          var tracked = [];
+          window.__spotuiMedia = tracked;
+          var origPlay = HTMLMediaElement.prototype.play;
+          HTMLMediaElement.prototype.play = function(){
+            if (tracked.indexOf(this) < 0) tracked.push(this);
+            return origPlay.apply(this, arguments);
+          };
+        })();
+    """.trimIndent()
+
     private val PLAYER_STATE_JS = """
         function spotuiState(){
           var pp = document.querySelector('[data-testid="control-button-playpause"]');
           var label = pp ? (pp.getAttribute('aria-label') || '').toLowerCase() : '';
           var session = (navigator.mediaSession && navigator.mediaSession.playbackState) || '';
-          var media = document.querySelectorAll('audio,video'), active = null;
+          var media = [].slice.call(document.querySelectorAll('audio,video'));
+          (window.__spotuiMedia || []).forEach(function(m){ if (media.indexOf(m) < 0) media.push(m); });
+          var active = null;
           for (var i = 0; i < media.length; i++) {
             var m = media[i];
             if (!m.paused && !m.ended && m.readyState > 1) { active = m; break; }
           }
+          var now = document.querySelector('[data-testid="now-playing-widget"]');
+          var durEl = document.querySelector('[data-testid="playback-duration"]');
+          var durOk = !!(durEl && /\d/.test(durEl.textContent || ''));
           var byLabel = /pause|pozastav|pausa|pausar|pausier|pauze|paus/.test(label);
           return { pp: pp, label: label, session: session, media: active, count: media.length,
-                   playing: session === 'playing' || !!active || byLabel };
+                   playing: session === 'playing' || !!active || (byLabel && !!now && durOk) };
         }
     """.trimIndent()
 

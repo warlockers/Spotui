@@ -2367,7 +2367,9 @@ object SongPlayer {
         embedActive = active
     }
 
-    private const val EMBED_START_TIMEOUT_MS = 45_000L
+    private const val EMBED_START_TIMEOUT_MS = 15_000L
+    private const val EMBED_AD_TIMEOUT_MS = 60_000L
+    private const val EMBED_AD_MAX_MS = 45_000L
     private const val EMBED_DURATION_TOLERANCE_MS = 10_000L
     private const val EMBED_TIMEOUT_BLOCK_MINUTES = 2L
 
@@ -2404,6 +2406,11 @@ object SongPlayer {
 
     private fun spotifyEmbedAvailable(appContext: Context): Boolean = spotifyUnavailableReason(appContext) == null
 
+    private fun embedAdPlaying(expectedDurationMs: Long): Boolean {
+        val duration = SpotifyWebPlayer.durationMs
+        return SpotifyWebPlayer.isPlaying && duration in 1..EMBED_AD_MAX_MS && expectedDurationMs > 60_000L
+    }
+
     private fun embedStarted(expectedDurationMs: Long): Boolean {
         val duration = SpotifyWebPlayer.durationMs
         if (!SpotifyWebPlayer.isPlaying || duration <= 0 || SpotifyWebPlayer.positionMs <= 0) return false
@@ -2428,13 +2435,16 @@ object SongPlayer {
         updateResolveStatus(true, "Loading Spotify track...")
         if (episode) SpotifyWebPlayer.playEpisode(spotifyId) else SpotifyWebPlayer.play(spotifyId)
         scope.launch {
-            val deadline = System.currentTimeMillis() + EMBED_START_TIMEOUT_MS
-            while (currentRequest == song && !embedStarted(expectedDurationMs) && System.currentTimeMillis() < deadline) {
+            val startedAt = System.currentTimeMillis()
+            while (currentRequest == song && !embedStarted(expectedDurationMs)) {
+                val elapsed = System.currentTimeMillis() - startedAt
+                if (elapsed >= EMBED_AD_TIMEOUT_MS) break
+                if (elapsed >= EMBED_START_TIMEOUT_MS && !embedAdPlaying(expectedDurationMs)) break
                 delay(250)
             }
             if (currentRequest != song) return@launch
             if (!embedStarted(expectedDurationMs)) {
-                val failure = "playback did not start within ${EMBED_START_TIMEOUT_MS / 1000} s"
+                val failure = "playback did not start within ${(System.currentTimeMillis() - startedAt) / 1000} s"
                 val pageInfo = kotlinx.coroutines.CompletableDeferred<String>()
                 SpotifyWebPlayer.diagnose { pageInfo.complete(it) }
                 val page = kotlinx.coroutines.withTimeoutOrNull(3_000L) { pageInfo.await() } ?: "no page info"
