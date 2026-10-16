@@ -32,6 +32,9 @@ import androidx.webkit.WebViewFeature
 object SpotifyWebPlayer {
     private const val TAG = "SpotifyWebPlayer"
     private const val FALLBACK_CHROME_VERSION = "131.0.0.0"
+    private const val NAVIGATE_PLAY_WINDOW_MS = 40_000L
+    private const val COMMAND_RESEND_MS = 8_000L
+    private const val CLICK_FALLBACK_MS = 20_000L
     private val ENGLISH_HEADERS = mapOf("Accept-Language" to "en-US,en;q=0.9")
     private const val SPOTIFY_ORIGIN = "https://open.spotify.com"
     private const val MAX_AD_IDS = 32
@@ -39,6 +42,12 @@ object SpotifyWebPlayer {
     private val adIds = LinkedHashSet<String>()
     @Volatile private var lastRecreateMs = 0L
     @Volatile var lastClickResult: String? = null
+    @Volatile var lastCommandResult: String? = null
+    @Volatile private var tapOurs = false
+    @Volatile private var tapPlaying = false
+    @Volatile private var tapDuration = 0L
+    @Volatile private var tapPosBase = 0L
+    @Volatile private var tapAtMs = 0L
 
     @Volatile private var webView: WebView? = null
     @Volatile var pageReady = false
@@ -69,12 +78,21 @@ object SpotifyWebPlayer {
     // True once the first play navigated+clicked, activating the web player's
     // Connect device — a prerequisite for the command API to actually start audio.
     @Volatile private var activated = false
+    val isWarm: Boolean get() = activated && commandReady
 
     /** Invoked (on the main thread) after each progress poll so the media
      *  notification's SimpleBasePlayer can refresh its state. */
     @Volatile var onStateChanged: (() -> Unit)? = null
 
     private val pollHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private fun applyPlayerTap() {
+        val at = tapAtMs
+        if (at == 0L || !tapOurs) return
+        isPlaying = tapPlaying
+        if (tapDuration > 0) durationMs = tapDuration
+        positionMs = if (tapPlaying) tapPosBase + (System.currentTimeMillis() - at) else tapPosBase
+    }
+
     private val pollRunnable = object : Runnable {
         override fun run() {
             val wv = webView
@@ -87,6 +105,10 @@ object SpotifyWebPlayer {
                         parts[0].toDoubleOrNull()?.let { if (it >= 0) positionMs = (it * 1000).toLong() }
                         parts[1].toDoubleOrNull()?.let { if (it >= 0) durationMs = (it * 1000).toLong() }
                         isPlaying = parts[2] == "1"
+                        applyPlayerTap()
+                        onStateChanged?.invoke()
+                    } else {
+                        applyPlayerTap()
                         onStateChanged?.invoke()
                     }
                 }
@@ -131,6 +153,23 @@ object SpotifyWebPlayer {
                     recordAdIds(json)
                 }
                 @android.webkit.JavascriptInterface
+                fun onPlayerState(
+                    active: String, devId: String, playing: Boolean,
+                    position: Double, duration: Double, stateTs: Double, serverTs: Double,
+                ) {
+                    tapOurs = devId.isNotEmpty() && active == devId
+                    if (!tapOurs) return
+                    tapPlaying = playing
+                    tapDuration = duration.toLong()
+                    tapPosBase = position.toLong() + (if (serverTs > 0 && stateTs > 0) (serverTs - stateTs).toLong().coerceAtLeast(0L) else 0L)
+                    tapAtMs = System.currentTimeMillis()
+                }
+                @android.webkit.JavascriptInterface
+                fun onCommandResult(status: Int, body: String) {
+                    lastCommandResult = "$status ${body.take(60)}"
+                    Log.d(TAG, "command result: $lastCommandResult")
+                }
+                @android.webkit.JavascriptInterface
                 fun onCommandReady() {
                     // The web player registered a device + we captured its tokens, so
                     // we can now switch tracks via the connect-state command API
@@ -166,6 +205,8 @@ object SpotifyWebPlayer {
 
                 override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                     synchronized(adIds) { adIds.clear() }
+                    tapAtMs = 0L
+                    tapOurs = false
                     // Inject as EARLY as possible: the off-screen WebView reports the
                     // page as hidden, and Spotify's Web Playback SDK refuses to
                     // register a device / start audio on a hidden page. Spoof the Page
@@ -308,7 +349,7 @@ object SpotifyWebPlayer {
             if (activated && commandReady) {
                 sendCommand(uri, path)
             } else {
-                navigateAndPlay(wv, path)
+                navigateAndPlay(wv, uri, path)
                 activated = true
             }
         }
@@ -320,24 +361,40 @@ object SpotifyWebPlayer {
             Log.d(TAG, "command play -> $r")
             val res = r?.trim('"')
             if ((res == "no-fn" || res == "no-device") && path != null) {
-                wv.post { navigateAndPlay(wv, path) }
+                wv.post { navigateAndPlay(wv, uri, path) }
             }
         }
     }
 
     /** Last-resort cold start: navigate once to boot the player, then click play. */
-    private fun navigateAndPlay(wv: WebView, path: String) {
+    private fun navigateAndPlay(wv: WebView, uri: String, path: String) {
         wv.loadUrl("https://open.spotify.com/$path", ENGLISH_HEADERS)
         lastClickResult = null
-        for (delay in longArrayOf(2000, 3000, 4000, 5000, 6500, 8000, 10000, 12000, 15000, 18000, 21000, 24000, 27000, 30000)) {
-            wv.postDelayed({
-                if (isPlaying) return@postDelayed
-                wv.evaluateJavascript(clickPlayJs()) { r ->
-                    lastClickResult = r
-                    if (r != null && r.contains("clicked")) Log.d(TAG, "play click: $r")
+        val startedAt = System.currentTimeMillis()
+        var lastSentAt = 0L
+        var clicked = false
+        val tick = object : Runnable {
+            override fun run() {
+                if (webView !== wv || isPlaying) return
+                val elapsed = System.currentTimeMillis() - startedAt
+                if (elapsed > NAVIGATE_PLAY_WINDOW_MS) return
+                wv.evaluateJavascript("(window.__devId && window.__auth) ? '1' : '0'") { ready ->
+                    if (webView !== wv || isPlaying) return@evaluateJavascript
+                    val now = System.currentTimeMillis()
+                    if (ready?.contains("1") == true && (lastSentAt == 0L || now - lastSentAt > COMMAND_RESEND_MS)) {
+                        lastSentAt = now
+                        wv.evaluateJavascript("(window.__spotuiPlay ? window.__spotuiPlay('$uri') : 'no-fn');") { r ->
+                            lastClickResult = "command:" + r
+                        }
+                    } else if (!clicked && elapsed > CLICK_FALLBACK_MS && ready?.contains("1") != true) {
+                        clicked = true
+                        wv.evaluateJavascript(clickPlayJs()) { r -> lastClickResult = r }
+                    }
+                    wv.postDelayed(this, 500)
                 }
-            }, delay)
+            }
         }
+        wv.postDelayed(tick, 1500)
     }
 
     fun diagnose(onResult: (String) -> Unit) {
@@ -523,7 +580,7 @@ object SpotifyWebPlayer {
             var isAd = ad || (!Array.isArray(node) && flagged(node));
             for (var k in node) {
               var v = node[k];
-              if (isAd && /file_?ids?${'$'}/i.test(k)) {
+              if (isAd && /file_?ids?/i.test(k)) {
                 if (typeof v === 'string') add(v);
                 else if (Array.isArray(v)) v.forEach(function(e){
                   if (typeof e === 'string') add(e);
@@ -545,11 +602,27 @@ object SpotifyWebPlayer {
             var stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
             return new Response(stream).text();
           }
+          function tapState(msg){
+            try {
+              if (!msg || msg.uri !== 'hm://connect-state/v1/cluster' || !msg.payloads || !msg.payloads.length) return;
+              var p = msg.payloads[0];
+              if (typeof p === 'string') p = JSON.parse(p);
+              var c = p && p.cluster, st = c && c.player_state;
+              if (!st) return;
+              SpotuiBridge.onPlayerState(
+                c.active_device_id || '', window.__devId || '',
+                !!st.is_playing && !st.is_paused,
+                Number(st.position_as_of_timestamp) || 0, Number(st.duration) || 0,
+                Number(st.timestamp) || 0, Number(c.server_timestamp_ms) || 0
+              );
+            } catch(e){}
+          }
           function handleMessage(text){
             if (typeof text !== 'string' || text.length > 8000000) return;
             var parsed;
             try { parsed = JSON.parse(text); } catch(e){ return; }
             inspect(parsed);
+            tapState(parsed);
             var gz = parsed && parsed.headers && /gzip/i.test(parsed.headers['Transfer-Encoding'] || '');
             if (gz && parsed.payloads && parsed.payloads.length && typeof DecompressionStream === 'function') {
               parsed.payloads.forEach(function(p){
@@ -638,6 +711,8 @@ object SpotifyWebPlayer {
                 try { var b = JSON.parse(opts.body); if (b && b.device && b.device.device_id) window.__devId = b.device.device_id; } catch(e){}
               }
               var ct = hv('Client-Token'); if (ct) window.__cliToken = ct;
+              var ap = hv('app-platform'); if (ap) window.__appPlatform = ap;
+              var av = hv('spotify-app-version'); if (av) window.__appVer = av;
               var au = hv('Authorization'); if (au && au.indexOf('Bearer') === 0) window.__auth = au;
               if (window.__devId && window.__auth && !window.__reported) {
                 window.__reported = true;
@@ -652,11 +727,17 @@ object SpotifyWebPlayer {
             if (!window.__devId || !window.__auth) return 'no-device';
             var base = window.__spBase || 'https://gew4-spclient.spotify.com';
             var type = (uri.match(/^spotify:([^:]+)/) || [])[1] || 'track';
+            var cmdId = '';
+            for (var i = 0; i < 32; i++) cmdId += Math.floor(Math.random() * 16).toString(16);
+            var headers = { 'Authorization': window.__auth, 'Client-Token': window.__cliToken || '', 'Content-Type': 'application/json', 'app-platform': window.__appPlatform || 'WebPlayer' };
+            if (window.__appVer) headers['spotify-app-version'] = window.__appVer;
             window.__oriFetch(base + '/connect-state/v1/player/command/from/' + window.__devId + '/to/' + window.__devId, {
               method: 'POST',
-              headers: { 'Authorization': window.__auth, 'Client-Token': window.__cliToken || '', 'Content-Type': 'application/json' },
-              body: JSON.stringify({ command: { context: { uri: uri, url: 'context://' + uri, metadata: {} }, play_origin: { feature_identifier: type, feature_version: window.__featVer, referrer_identifier: 'search' }, options: { license: 'tft', skip_to: {}, player_options_override: {} }, endpoint: 'play' } })
-            }).catch(function(){});
+              headers: headers,
+              body: JSON.stringify({ command: { context: { uri: uri, url: 'context://' + uri, metadata: {} }, play_origin: { feature_identifier: type, feature_version: window.__featVer, referrer_identifier: 'search' }, options: { license: 'tft', skip_to: {}, player_options_override: {} }, endpoint: 'play', logging_params: { page_instance_ids: [], interaction_ids: [], command_id: cmdId } } })
+            }).then(function(r){
+              return r.text().then(function(t){ try { SpotuiBridge.onCommandResult(r.status, t); } catch(e){} });
+            }).catch(function(e){ try { SpotuiBridge.onCommandResult(-1, String(e)); } catch(x){} });
             return 'sent';
           };
         })();

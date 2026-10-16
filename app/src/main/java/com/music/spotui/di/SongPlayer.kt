@@ -2368,6 +2368,7 @@ object SongPlayer {
     }
 
     private const val EMBED_START_TIMEOUT_MS = 15_000L
+    private const val EMBED_COLD_START_TIMEOUT_MS = 30_000L
     private const val EMBED_AD_TIMEOUT_MS = 60_000L
     private const val EMBED_AD_MAX_MS = 45_000L
     private const val EMBED_DURATION_TOLERANCE_MS = 10_000L
@@ -2433,13 +2434,14 @@ object SongPlayer {
         currentSource = "Spotify"
         currentQuality = ""
         updateResolveStatus(true, "Loading Spotify track...")
+        val startTimeoutMs = if (SpotifyWebPlayer.isWarm) EMBED_START_TIMEOUT_MS else EMBED_COLD_START_TIMEOUT_MS
         if (episode) SpotifyWebPlayer.playEpisode(spotifyId) else SpotifyWebPlayer.play(spotifyId)
         scope.launch {
             val startedAt = System.currentTimeMillis()
             while (currentRequest == song && !embedStarted(expectedDurationMs)) {
                 val elapsed = System.currentTimeMillis() - startedAt
                 if (elapsed >= EMBED_AD_TIMEOUT_MS) break
-                if (elapsed >= EMBED_START_TIMEOUT_MS && !embedAdPlaying(expectedDurationMs)) break
+                if (elapsed >= startTimeoutMs && !embedAdPlaying(expectedDurationMs)) break
                 delay(250)
             }
             if (currentRequest != song) return@launch
@@ -2448,7 +2450,7 @@ object SongPlayer {
                 val pageInfo = kotlinx.coroutines.CompletableDeferred<String>()
                 SpotifyWebPlayer.diagnose { pageInfo.complete(it) }
                 val page = kotlinx.coroutines.withTimeoutOrNull(3_000L) { pageInfo.await() } ?: "no page info"
-                val detail = "$failure [isPlaying=${SpotifyWebPlayer.isPlaying}, pos=${SpotifyWebPlayer.positionMs / 1000}s, dur=${SpotifyWebPlayer.durationMs / 1000}s, expected=${expectedDurationMs / 1000}s, pageReady=${SpotifyWebPlayer.pageReady}, canPlay=${SpotifyWebPlayer.canPlay}, lastClick=${SpotifyWebPlayer.lastClickResult}, page=$page]"
+                val detail = "$failure [isPlaying=${SpotifyWebPlayer.isPlaying}, pos=${SpotifyWebPlayer.positionMs / 1000}s, dur=${SpotifyWebPlayer.durationMs / 1000}s, expected=${expectedDurationMs / 1000}s, pageReady=${SpotifyWebPlayer.pageReady}, canPlay=${SpotifyWebPlayer.canPlay}, lastClick=${SpotifyWebPlayer.lastClickResult}, cmd=${SpotifyWebPlayer.lastCommandResult}, page=$page]"
                 embedLastFailure = detail
                 logResolution("Spotify: $detail, falling back")
                 spotifyRouteNote = "Spotify: $detail, falling back"
