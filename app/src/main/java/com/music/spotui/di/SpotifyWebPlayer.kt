@@ -35,6 +35,7 @@ object SpotifyWebPlayer {
     private const val NAVIGATE_PLAY_WINDOW_MS = 40_000L
     private const val COMMAND_RESEND_MS = 8_000L
     private const val CLICK_FALLBACK_MS = 20_000L
+    private const val MAX_DIALOG_TRIES = 6
     private val ENGLISH_HEADERS = mapOf("Accept-Language" to "en-US,en;q=0.9")
     private const val SPOTIFY_ORIGIN = "https://open.spotify.com"
     private const val MAX_AD_IDS = 32
@@ -48,6 +49,16 @@ object SpotifyWebPlayer {
     @Volatile private var tapDuration = 0L
     @Volatile private var tapPosBase = 0L
     @Volatile private var tapAtMs = 0L
+    @Volatile private var tapUri = ""
+    @Volatile private var tapLinkedUri = ""
+
+    fun trackMatches(uri: String): Boolean? {
+        if (tapAtMs == 0L || !tapOurs || tapUri.isEmpty()) return null
+        return tapUri == uri || tapLinkedUri == uri
+    }
+
+    fun tapSummary(): String =
+        if (tapAtMs == 0L) "none" else "ours=$tapOurs playing=$tapPlaying uri=$tapUri age=${(System.currentTimeMillis() - tapAtMs) / 1000}s"
 
     @Volatile private var webView: WebView? = null
     @Volatile var pageReady = false
@@ -156,9 +167,12 @@ object SpotifyWebPlayer {
                 fun onPlayerState(
                     active: String, devId: String, playing: Boolean,
                     position: Double, duration: Double, stateTs: Double, serverTs: Double,
+                    uri: String, linkedUri: String,
                 ) {
                     tapOurs = devId.isNotEmpty() && active == devId
                     if (!tapOurs) return
+                    tapUri = uri
+                    tapLinkedUri = linkedUri
                     tapPlaying = playing
                     tapDuration = duration.toLong()
                     tapPosBase = position.toLong() + (if (serverTs > 0 && stateTs > 0) (serverTs - stateTs).toLong().coerceAtLeast(0L) else 0L)
@@ -166,7 +180,8 @@ object SpotifyWebPlayer {
                 }
                 @android.webkit.JavascriptInterface
                 fun onCommandResult(status: Int, body: String) {
-                    lastCommandResult = "$status ${body.take(60)}"
+                    val entry = "$status ${body.take(60)}"
+                    lastCommandResult = listOfNotNull(lastCommandResult?.substringAfterLast(" ; "), entry).joinToString(" ; ")
                     Log.d(TAG, "command result: $lastCommandResult")
                 }
                 @android.webkit.JavascriptInterface
@@ -373,11 +388,16 @@ object SpotifyWebPlayer {
         val startedAt = System.currentTimeMillis()
         var lastSentAt = 0L
         var clicked = false
+        var dialogTries = 0
         val tick = object : Runnable {
             override fun run() {
                 if (webView !== wv || isPlaying) return
                 val elapsed = System.currentTimeMillis() - startedAt
                 if (elapsed > NAVIGATE_PLAY_WINDOW_MS) return
+                if (dialogTries < MAX_DIALOG_TRIES) {
+                    dialogTries++
+                    wv.evaluateJavascript("(function(){ $PLAYER_STATE_JS return spotuiDismissDialog() || ''; })();", null)
+                }
                 wv.evaluateJavascript("(window.__devId && window.__auth) ? '1' : '0'") { ready ->
                     if (webView !== wv || isPlaying) return@evaluateJavascript
                     val now = System.currentTimeMillis()
@@ -609,11 +629,15 @@ object SpotifyWebPlayer {
               if (typeof p === 'string') p = JSON.parse(p);
               var c = p && p.cluster, st = c && c.player_state;
               if (!st) return;
+              window.__spotuiActive = !!window.__devId && c.active_device_id === window.__devId;
+              var tr = st.track || {};
+              var md = tr.metadata || {};
               SpotuiBridge.onPlayerState(
                 c.active_device_id || '', window.__devId || '',
                 !!st.is_playing && !st.is_paused,
                 Number(st.position_as_of_timestamp) || 0, Number(st.duration) || 0,
-                Number(st.timestamp) || 0, Number(c.server_timestamp_ms) || 0
+                Number(st.timestamp) || 0, Number(c.server_timestamp_ms) || 0,
+                tr.uri || '', md.linked_from_uri || ''
               );
             } catch(e){}
           }
@@ -725,20 +749,24 @@ object SpotifyWebPlayer {
           // onCommandReady), so we never poke a half-initialised player.
           window.__spotuiPlay = function(uri){
             if (!window.__devId || !window.__auth) return 'no-device';
-            var base = window.__spBase || 'https://gew4-spclient.spotify.com';
+            var base = (window.__spBase || 'https://gew4-spclient.spotify.com') + '/connect-state/v1/';
+            var dev = window.__devId;
             var type = (uri.match(/^spotify:([^:]+)/) || [])[1] || 'track';
-            var cmdId = '';
-            for (var i = 0; i < 32; i++) cmdId += Math.floor(Math.random() * 16).toString(16);
+            function rnd(){ var s = ''; for (var i = 0; i < 32; i++) s += Math.floor(Math.random() * 16).toString(16); return s; }
             var headers = { 'Authorization': window.__auth, 'Client-Token': window.__cliToken || '', 'Content-Type': 'application/json', 'app-platform': window.__appPlatform || 'WebPlayer' };
             if (window.__appVer) headers['spotify-app-version'] = window.__appVer;
-            window.__oriFetch(base + '/connect-state/v1/player/command/from/' + window.__devId + '/to/' + window.__devId, {
-              method: 'POST',
-              headers: headers,
-              body: JSON.stringify({ command: { context: { uri: uri, url: 'context://' + uri, metadata: {} }, play_origin: { feature_identifier: type, feature_version: window.__featVer, referrer_identifier: 'search' }, options: { license: 'tft', skip_to: {}, player_options_override: {} }, endpoint: 'play', logging_params: { page_instance_ids: [], interaction_ids: [], command_id: cmdId } } })
-            }).then(function(r){
-              return r.text().then(function(t){ try { SpotuiBridge.onCommandResult(r.status, t); } catch(e){} });
-            }).catch(function(e){ try { SpotuiBridge.onCommandResult(-1, String(e)); } catch(x){} });
-            return 'sent';
+            function post(path, body, tag){
+              return window.__oriFetch(base + path, { method: 'POST', headers: headers, body: JSON.stringify(body) })
+                .then(function(r){ return r.text().then(function(t){ try { SpotuiBridge.onCommandResult(r.status, tag + ' ' + t.replace(/\s+/g, ' ')); } catch(e){} return r.status; }); })
+                .catch(function(e){ try { SpotuiBridge.onCommandResult(-1, tag + ' ' + String(e)); } catch(x){} return -1; });
+            }
+            function play(){
+              return post('player/command/from/' + dev + '/to/' + dev, { command: { context: { uri: uri, url: 'context://' + uri, metadata: {} }, play_origin: { feature_identifier: type, feature_version: window.__featVer, referrer_identifier: 'search' }, options: { license: 'tft', skip_to: {}, player_options_override: {} }, endpoint: 'play', logging_params: { page_instance_ids: [], interaction_ids: [], command_id: rnd() } } }, 'play');
+            }
+            if (window.__spotuiActive) { play(); return 'sent'; }
+            post('connect/transfer/from/' + dev + '/to/' + dev, { transfer_options: { restore_paused: 'pause' }, command_id: rnd() }, 'transfer')
+              .then(function(){ setTimeout(play, 1500); });
+            return 'transfer+play';
           };
         })();
     """.trimIndent()
