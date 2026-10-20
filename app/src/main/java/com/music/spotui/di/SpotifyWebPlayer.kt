@@ -453,6 +453,8 @@ object SpotifyWebPlayer {
             tracked: (window.__spotuiMedia || []).length,
             icon: st.icon,
             hook: !!window.__spotuiAdHook,
+            reg: window.__spotuiReg || null,
+            boot: !!window.__spotuiReady,
             active: !!window.__spotuiActive,
             ws: window.__spotuiWs || null,
             devId: !!window.__devId,
@@ -554,7 +556,7 @@ object SpotifyWebPlayer {
         return runCatching {
             WebViewCompat.addDocumentStartJavaScript(
                 wv,
-                VISIBILITY_SPOOF_JS + "\n" + LOCALE_SPOOF_JS + "\n" + MEDIA_TRACK_JS + "\n" + AD_STATE_HOOK_JS,
+                VISIBILITY_SPOOF_JS + "\n" + LOCALE_SPOOF_JS + "\n" + MEDIA_TRACK_JS + "\n" + AD_STATE_HOOK_JS + "\n" + BOOTSTRAP_JS,
                 setOf(SPOTIFY_ORIGIN),
             )
             true
@@ -689,7 +691,7 @@ object SpotifyWebPlayer {
                 this.addEventListener('message', function(ev){
                   info.msgs++;
                   if (typeof ev.data === 'string') {
-                    var m = /"uri"\s*:\s*"([^"]{0,60})"/.exec(ev.data.slice(0, 400));
+                    var m = /"uri"\s*:\s*"([^"]{0,60})"/.exec(ev.data.slice(0, 20000));
                     if (m) { info.uris.push(m[1]); if (info.uris.length > 4) info.uris.shift(); }
                     handleMessage(ev.data);
                   }
@@ -760,7 +762,21 @@ object SpotifyWebPlayer {
                 try { SpotuiBridge.onCommandReady(); } catch(e){}
               }
             } catch(e){}
-            return oriFetch.apply(this, arguments);
+            var pending = oriFetch.apply(this, arguments);
+            try {
+              var target = (typeof arguments[0] === 'string') ? arguments[0] : (arguments[0] && arguments[0].url) || '';
+              var isTp = target.indexOf('/track-playback/v1/devices') > -1;
+              var isCs = target.indexOf('/connect-state/v1/devices/') > -1;
+              if (isTp || isCs) {
+                var verb = ((arguments[1] && arguments[1].method) || (arguments[0] && arguments[0].method) || 'GET').toUpperCase();
+                var key = (isCs ? 'cs:' : 'tp:') + verb;
+                var reg = window.__spotuiReg = window.__spotuiReg || {};
+                pending.then(function(r){
+                  r.clone().text().then(function(t){ reg[key] = r.status + (r.ok ? '' : ' ' + t.replace(/\s+/g, ' ').slice(0, 80)); }).catch(function(){});
+                }).catch(function(e){ reg[key] = 'err ' + String(e).slice(0, 60); });
+              }
+            } catch(e){}
+            return pending;
           };
           // Only ever called AFTER the token+device are captured (native waits for
           // onCommandReady), so we never poke a half-initialised player.
