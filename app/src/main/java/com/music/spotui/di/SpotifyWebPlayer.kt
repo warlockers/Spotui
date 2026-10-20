@@ -50,6 +50,8 @@ object SpotifyWebPlayer {
     @Volatile private var tapPosBase = 0L
     @Volatile private var tapAtMs = 0L
     @Volatile private var tapUri = ""
+    @Volatile private var tapMsgs = 0
+    @Volatile private var tapActive = ""
     @Volatile private var tapLinkedUri = ""
 
     fun trackMatches(uri: String): Boolean? {
@@ -58,7 +60,7 @@ object SpotifyWebPlayer {
     }
 
     fun tapSummary(): String =
-        if (tapAtMs == 0L) "none" else "ours=$tapOurs playing=$tapPlaying uri=$tapUri age=${(System.currentTimeMillis() - tapAtMs) / 1000}s"
+        if (tapMsgs == 0) "none" else "msgs=$tapMsgs ours=$tapOurs active=${tapActive.take(6)} playing=$tapPlaying uri=$tapUri age=${if (tapAtMs == 0L) -1 else (System.currentTimeMillis() - tapAtMs) / 1000}s"
 
     @Volatile private var webView: WebView? = null
     @Volatile var pageReady = false
@@ -169,7 +171,9 @@ object SpotifyWebPlayer {
                     position: Double, duration: Double, stateTs: Double, serverTs: Double,
                     uri: String, linkedUri: String,
                 ) {
+                    tapMsgs++
                     tapOurs = devId.isNotEmpty() && active == devId
+                    tapActive = active
                     if (!tapOurs) return
                     tapUri = uri
                     tapLinkedUri = linkedUri
@@ -448,6 +452,9 @@ object SpotifyWebPlayer {
             mediaCount: st.count,
             tracked: (window.__spotuiMedia || []).length,
             icon: st.icon,
+            hook: !!window.__spotuiAdHook,
+            active: !!window.__spotuiActive,
+            ws: window.__spotuiWs || null,
             devId: !!window.__devId,
             auth: !!window.__auth,
             lang: document.documentElement.lang,
@@ -674,8 +681,18 @@ object SpotifyWebPlayer {
             var Wrapped = class extends OrigWS {
               constructor(url, protocols){
                 if (protocols === undefined) super(url); else super(url, protocols);
+                var info = window.__spotuiWs = window.__spotuiWs || { opened: 0, closed: 0, errors: 0, msgs: 0, last: '', uris: [] };
+                try { info.host = String(url).replace(/^wss?:\/\/([^\/?]+).*/, '$1'); } catch(e){}
+                this.addEventListener('open', function(){ info.opened++; });
+                this.addEventListener('close', function(ev){ info.closed++; info.last = 'close:' + ev.code; });
+                this.addEventListener('error', function(){ info.errors++; });
                 this.addEventListener('message', function(ev){
-                  if (typeof ev.data === 'string') handleMessage(ev.data);
+                  info.msgs++;
+                  if (typeof ev.data === 'string') {
+                    var m = /"uri"\s*:\s*"([^"]{0,60})"/.exec(ev.data.slice(0, 400));
+                    if (m) { info.uris.push(m[1]); if (info.uris.length > 4) info.uris.shift(); }
+                    handleMessage(ev.data);
+                  }
                 });
               }
             };
@@ -845,13 +862,16 @@ object SpotifyWebPlayer {
           var names = [];
           try { names.push(new Intl.DisplayNames([lang], { type: 'language' }).of(lang)); } catch (e) {}
           names.push('English');
-          var items = [].slice.call(d.querySelectorAll('button,[role="button"],li,a'));
+          var kinds = ['button', '[role="button"]', '[role="option"]', 'a', 'li'];
           for (var n = 0; n < names.length; n++) {
             var nm = (names[n] || '').toLowerCase();
             if (!nm) continue;
-            for (var i = 0; i < items.length; i++) {
-              var t = (items[i].textContent || '').toLowerCase();
-              if (t.indexOf(nm) > -1 && t.length < nm.length * 3) { items[i].click(); return 'dialog-language:' + nm; }
+            for (var k = 0; k < kinds.length; k++) {
+              var items = [].slice.call(d.querySelectorAll(kinds[k]));
+              for (var i = 0; i < items.length; i++) {
+                var t = (items[i].textContent || '').toLowerCase();
+                if (t.indexOf(nm) > -1 && t.length < nm.length * 3) { items[i].click(); return 'dialog-language:' + nm + ':' + kinds[k]; }
+              }
             }
           }
           var ev = new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true });
