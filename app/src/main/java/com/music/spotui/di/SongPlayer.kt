@@ -2453,7 +2453,10 @@ object SongPlayer {
                 val pageInfo = kotlinx.coroutines.CompletableDeferred<String>()
                 SpotifyWebPlayer.diagnose { pageInfo.complete(it) }
                 val page = kotlinx.coroutines.withTimeoutOrNull(3_000L) { pageInfo.await() } ?: "no page info"
-                val detail = "$failure [isPlaying=${SpotifyWebPlayer.isPlaying}, pos=${SpotifyWebPlayer.positionMs / 1000}s, dur=${SpotifyWebPlayer.durationMs / 1000}s, expected=${expectedDurationMs / 1000}s, pageReady=${SpotifyWebPlayer.pageReady}, canPlay=${SpotifyWebPlayer.canPlay}, lastClick=${SpotifyWebPlayer.lastClickResult}, cmd=${SpotifyWebPlayer.lastCommandResult}, tap=${SpotifyWebPlayer.tapSummary()}, wanted=$expectedUri, page=$page]"
+                val probeInfo = kotlinx.coroutines.CompletableDeferred<String>()
+                SpotifyWebPlayer.probe { probeInfo.complete(it) }
+                val probe = kotlinx.coroutines.withTimeoutOrNull(4_000L) { probeInfo.await() } ?: "no probe result"
+                val detail = "$failure [isPlaying=${SpotifyWebPlayer.isPlaying}, pos=${SpotifyWebPlayer.positionMs / 1000}s, dur=${SpotifyWebPlayer.durationMs / 1000}s, expected=${expectedDurationMs / 1000}s, pageReady=${SpotifyWebPlayer.pageReady}, canPlay=${SpotifyWebPlayer.canPlay}, lastClick=${SpotifyWebPlayer.lastClickResult}, cmd=${SpotifyWebPlayer.lastCommandResult}, tap=${SpotifyWebPlayer.tapSummary()}, wanted=$expectedUri, probe=$probe, page=$page]"
                 embedLastFailure = detail
                 logResolution("Spotify: $detail, falling back")
                 spotifyRouteNote = "Spotify: $detail, falling back"

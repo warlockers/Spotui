@@ -189,6 +189,10 @@ object SpotifyWebPlayer {
                     Log.d(TAG, "command result: $lastCommandResult")
                 }
                 @android.webkit.JavascriptInterface
+                fun onProbe(json: String) {
+                    probeCallback?.invoke(json)
+                }
+                @android.webkit.JavascriptInterface
                 fun onCommandReady() {
                     // The web player registered a device + we captured its tokens, so
                     // we can now switch tracks via the connect-state command API
@@ -421,6 +425,21 @@ object SpotifyWebPlayer {
         wv.postDelayed(tick, 1500)
     }
 
+    @Volatile private var probeCallback: ((String) -> Unit)? = null
+
+    fun probe(onResult: (String) -> Unit) {
+        val wv = webView
+        if (wv == null) {
+            onResult("no webview")
+            return
+        }
+        probeCallback = { json ->
+            probeCallback = null
+            onResult(json)
+        }
+        wv.post { wv.evaluateJavascript("(window.__spotuiProbe ? window.__spotuiProbe() : 'no-probe');", null) }
+    }
+
     fun diagnose(onResult: (String) -> Unit) {
         val wv = webView
         if (wv == null) {
@@ -454,6 +473,7 @@ object SpotifyWebPlayer {
             icon: st.icon,
             hook: !!window.__spotuiAdHook,
             reg: window.__spotuiReg || null,
+            workers: window.__spotuiWorkers || null,
             boot: !!window.__spotuiReady,
             active: !!window.__spotuiActive,
             ws: window.__spotuiWs || null,
@@ -679,6 +699,18 @@ object SpotifyWebPlayer {
             };
           } catch(e){}
           try {
+            ['Worker', 'SharedWorker'].forEach(function(name){
+              var Orig = window[name];
+              if (!Orig) return;
+              window[name] = class extends Orig {
+                constructor(url, opts){
+                  super(url, opts);
+                  try { (window.__spotuiWorkers = window.__spotuiWorkers || []).push(name + ':' + String(url).slice(0, 70)); } catch(e){}
+                }
+              };
+            });
+          } catch(e){}
+          try {
             var OrigWS = window.WebSocket;
             var Wrapped = class extends OrigWS {
               constructor(url, protocols){
@@ -690,6 +722,11 @@ object SpotifyWebPlayer {
                 this.addEventListener('error', function(){ info.errors++; });
                 this.addEventListener('message', function(ev){
                   info.msgs++;
+                  if (!info.samples) info.samples = [];
+                  if (info.samples.length < 3) {
+                    var raw = typeof ev.data === 'string' ? ev.data.slice(0, 80).replace(/[A-Za-z0-9_-]{24,}/g, '<id>') : '[' + Object.prototype.toString.call(ev.data) + ']';
+                    info.samples.push((typeof ev.data) + ':' + (ev.data && (ev.data.length || ev.data.size || ev.data.byteLength)) + ':' + raw);
+                  }
                   if (typeof ev.data === 'string') {
                     var m = /"uri"\s*:\s*"([^"]{0,60})"/.exec(ev.data.slice(0, 20000));
                     if (m) { info.uris.push(m[1]); if (info.uris.length > 4) info.uris.shift(); }
@@ -780,6 +817,28 @@ object SpotifyWebPlayer {
           };
           // Only ever called AFTER the token+device are captured (native waits for
           // onCommandReady), so we never poke a half-initialised player.
+          window.__spotuiProbe = function(){
+            var out = {};
+            function get(url){
+              return window.__oriFetch(url, { headers: { 'Authorization': window.__auth } })
+                .then(function(r){ return r.text().then(function(t){ return { s: r.status, t: t }; }); })
+                .catch(function(e){ return { s: -1, t: String(e) }; });
+            }
+            get('https://api.spotify.com/v1/me/player').then(function(a){
+              try {
+                var j = JSON.parse(a.t);
+                out.player = { s: a.s, playing: j.is_playing, dev: j.device && (j.device.name + '/' + String(j.device.id).slice(0, 6)), uri: j.item && j.item.uri, prog: j.progress_ms, dur: j.item && j.item.duration_ms };
+              } catch(e) { out.player = { s: a.s, body: String(a.t).slice(0, 60) }; }
+              return get('https://api.spotify.com/v1/me/player/devices');
+            }).then(function(b){
+              try {
+                var j = JSON.parse(b.t);
+                out.devices = (j.devices || []).map(function(d){ return d.name + (d.is_active ? '*' : '') + '/' + String(d.id).slice(0, 6); });
+              } catch(e) { out.devices = { s: b.s, body: String(b.t).slice(0, 60) }; }
+              try { SpotuiBridge.onProbe(JSON.stringify(out)); } catch(e){}
+            });
+            return 'probing';
+          };
           window.__spotuiPlay = function(uri){
             if (!window.__devId || !window.__auth) return 'no-device';
             var base = (window.__spBase || 'https://gew4-spclient.spotify.com') + '/connect-state/v1/';
