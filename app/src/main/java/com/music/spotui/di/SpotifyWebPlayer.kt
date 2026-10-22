@@ -473,6 +473,7 @@ object SpotifyWebPlayer {
             icon: st.icon,
             hook: !!window.__spotuiAdHook,
             reg: window.__spotuiReg || null,
+            devShort: String(window.__devId || '').slice(0, 10),
             workers: window.__spotuiWorkers || null,
             boot: !!window.__spotuiReady,
             active: !!window.__spotuiActive,
@@ -722,6 +723,10 @@ object SpotifyWebPlayer {
                 this.addEventListener('error', function(){ info.errors++; });
                 this.addEventListener('message', function(ev){
                   info.msgs++;
+                  if (!info.connId && typeof ev.data === 'string') {
+                    var cm = /Spotify-Connection-Id"\s*:\s*"([^"]{0,10})/.exec(ev.data.slice(0, 1500));
+                    if (cm) info.connId = cm[1];
+                  }
                   if (!info.samples) info.samples = [];
                   if (info.samples.length < 3) {
                     var raw = typeof ev.data === 'string' ? ev.data.slice(0, 80).replace(/[A-Za-z0-9_-]{24,}/g, '<id>') : '[' + Object.prototype.toString.call(ev.data) + ']';
@@ -808,8 +813,19 @@ object SpotifyWebPlayer {
                 var verb = ((arguments[1] && arguments[1].method) || (arguments[0] && arguments[0].method) || 'GET').toUpperCase();
                 var key = (isCs ? 'cs:' : 'tp:') + verb;
                 var reg = window.__spotuiReg = window.__spotuiReg || {};
+                var hs2 = (arguments[1] && arguments[1].headers) || {};
+                function hv2(n){ try { return hs2.get ? hs2.get(n) : (hs2[n] || hs2[n.toLowerCase()]); } catch(e){ return null; } }
+                if (isCs && verb === 'PUT') reg['cs:conn'] = String(hv2('X-Spotify-Connection-Id') || 'none').slice(0, 10);
                 pending.then(function(r){
-                  r.clone().text().then(function(t){ reg[key] = r.status + (r.ok ? '' : ' ' + t.replace(/\s+/g, ' ').slice(0, 80)); }).catch(function(){});
+                  r.clone().text().then(function(t){
+                    reg[key] = r.status + (r.ok ? '' : ' ' + t.replace(/\s+/g, ' ').slice(0, 80));
+                    if (isCs && verb === 'PUT' && r.ok) {
+                      try {
+                        var j = JSON.parse(t);
+                        reg['cs:cluster'] = (Object.keys(j.devices || {}).map(function(k){ return k.slice(0, 10); }).join(',') || 'nodevs') + ' active=' + String(j.active_device_id || '').slice(0, 10);
+                      } catch(e){ reg['cs:cluster'] = 'unparsed:' + t.length; }
+                    }
+                  }).catch(function(){});
                 }).catch(function(e){ reg[key] = 'err ' + String(e).slice(0, 60); });
               }
             } catch(e){}
